@@ -1,8 +1,8 @@
 <?php
 /**
- * 报工管理系统 · PHP 后端（群晖 Web Station）
+ * 报工管理系统 · PHP 后端（群晖 Web Station · SQLite 分支）
  *
- * 与 Node 版共用 public/ 前端、data/db.json 数据、app.env 配置。
+ * 数据保存在 data/baogong.sqlite，图片在 data/images，配置在 app.env。
  * 接口：api.php?action=xxx
  */
 
@@ -169,8 +169,9 @@ $APP_PASSWORD = isset($BG_CFG['APP_PASSWORD']) ? $BG_CFG['APP_PASSWORD'] : '';
 $DATA_DIR = isset($BG_CFG['DATA_DIR']) && $BG_CFG['DATA_DIR'] !== '' ? $BG_CFG['DATA_DIR'] : $BG_ROOT . '/data';
 $IMG_DIR = $DATA_DIR . '/images';
 $BACKUP_DIR = $DATA_DIR . '/backups';
-$DB_FILE = $DATA_DIR . '/db.json';
+$DB_FILE = $DATA_DIR . '/baogong.sqlite';
 $SECRET_FILE = $DATA_DIR . '/.secret';
+$BG_SNAP = null;
 
 if (!is_dir($DATA_DIR)) {
     @mkdir($DATA_DIR, 0775, true);
@@ -299,94 +300,430 @@ function bg_migrate_report($r)
     return $r;
 }
 
-function bg_db_load()
+function bg_pdo()
 {
-    global $DB_FILE, $BACKUP_DIR;
-    $empty = array('parts' => array(), 'reports' => array(), 'orders' => array(), 'updatedAt' => null);
-    if (!is_file($DB_FILE)) {
-        return $empty;
+    static $pdo = null;
+    global $DB_FILE;
+    if ($pdo instanceof PDO) {
+        return $pdo;
     }
-    $raw = @file_get_contents($DB_FILE);
-    if ($raw === false || trim($raw) === '') {
-        return $empty;
+    try {
+        $pdo = new PDO('sqlite:' . $DB_FILE);
+    } catch (Throwable $e) {
+        bg_fail(500, 'PHP 未启用 SQLite 扩展（pdo_sqlite）。请在 Web Station 的 PHP 配置 → 扩展里勾选 pdo_sqlite / sqlite3，保存后重试。');
     }
-    $data = json_decode($raw, true);
+    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+    $pdo->exec('PRAGMA journal_mode=WAL');
+    $pdo->exec('PRAGMA synchronous=NORMAL');
+    $pdo->exec('PRAGMA busy_timeout=5000');
+    bg_sqlite_schema($pdo);
+    bg_sqlite_import_json($pdo);
+    return $pdo;
+}
+
+function bg_sqlite_schema($pdo)
+{
+    $sql = array(
+        "CREATE TABLE IF NOT EXISTS parts (
+            id TEXT PRIMARY KEY,
+            no TEXT NOT NULL UNIQUE,
+            name TEXT DEFAULT '',
+            material TEXT DEFAULT '',
+            note TEXT DEFAULT '',
+            stock REAL DEFAULT 0,
+            image TEXT DEFAULT '',
+            processes TEXT DEFAULT '[]',
+            created_at TEXT,
+            updated_at TEXT
+        )",
+        "CREATE TABLE IF NOT EXISTS orders (
+            id TEXT PRIMARY KEY,
+            no TEXT NOT NULL UNIQUE,
+            date TEXT,
+            part_id TEXT,
+            part_no TEXT,
+            part_name TEXT,
+            process TEXT DEFAULT '',
+            qty REAL DEFAULT 0,
+            note TEXT DEFAULT '',
+            created_at TEXT,
+            updated_at TEXT
+        )",
+        "CREATE TABLE IF NOT EXISTS reports (
+            id TEXT PRIMARY KEY,
+            no TEXT NOT NULL UNIQUE,
+            date TEXT,
+            worker TEXT,
+            workshop TEXT,
+            note TEXT,
+            order_id TEXT,
+            order_no TEXT,
+            images TEXT DEFAULT '[]',
+            created_at TEXT,
+            updated_at TEXT
+        )",
+        "CREATE TABLE IF NOT EXISTS report_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            report_id TEXT NOT NULL,
+            part_id TEXT,
+            part_no TEXT,
+            part_name TEXT,
+            process TEXT,
+            qty REAL,
+            price REAL,
+            amount REAL,
+            order_id TEXT,
+            order_no TEXT,
+            sort INTEGER DEFAULT 0
+        )",
+        'CREATE INDEX IF NOT EXISTS idx_reports_date ON reports(date)',
+        'CREATE INDEX IF NOT EXISTS idx_items_report ON report_items(report_id)',
+        'CREATE INDEX IF NOT EXISTS idx_items_order ON report_items(order_id)',
+        'CREATE INDEX IF NOT EXISTS idx_items_part ON report_items(part_id)',
+        'CREATE INDEX IF NOT EXISTS idx_orders_date ON orders(date)'
+    );
+    foreach ($sql as $one) {
+        $pdo->exec($one);
+    }
+}
+
+function bg_sqlite_import_json($pdo)
+{
+    global $DATA_DIR, $BG_SNAP;
+    $jsonFile = $DATA_DIR . '/db.json';
+    if (!is_file($jsonFile)) {
+        return;
+    }
+    $count = (int)$pdo->query('SELECT COUNT(*) FROM parts')->fetchColumn();
+    if ($count > 0) {
+        return;
+    }
+    $raw = @file_get_contents($jsonFile);
+    $data = $raw === false ? null : json_decode($raw, true);
     if (!is_array($data)) {
-        $files = glob($BACKUP_DIR . '/db-*.json');
-        if (is_array($files) && count($files) > 0) {
-            sort($files);
-            $last = $files[count($files) - 1];
-            $raw2 = @file_get_contents($last);
-            if ($raw2 !== false) {
-                $data = json_decode($raw2, true);
-            }
-            if (is_array($data)) {
-                @copy($DB_FILE, $DB_FILE . '.corrupt-' . time());
-            }
-        }
-    }
-    if (!is_array($data)) {
-        return $empty;
+        return;
     }
 
     $parts = array();
     if (isset($data['parts']) && is_array($data['parts'])) {
         foreach ($data['parts'] as $p) {
-            if (!is_array($p) || !isset($p['id']) || !isset($p['no'])) {
-                continue;
+            if (is_array($p) && isset($p['id']) && isset($p['no'])) {
+                $parts[] = bg_migrate_part($p);
             }
-            $parts[] = bg_migrate_part($p);
-        }
-    }
-    $reports = array();
-    if (isset($data['reports']) && is_array($data['reports'])) {
-        foreach ($data['reports'] as $r) {
-            if (!is_array($r) || !isset($r['id'])) {
-                continue;
-            }
-            if (!isset($r['items']) || !is_array($r['items'])) {
-                $r['items'] = array();
-            }
-            $reports[] = bg_migrate_report($r);
         }
     }
     $orders = array();
     if (isset($data['orders']) && is_array($data['orders'])) {
         foreach ($data['orders'] as $o) {
-            if (!is_array($o) || !isset($o['id']) || !isset($o['no'])) {
-                continue;
+            if (is_array($o) && isset($o['id']) && isset($o['no'])) {
+                $orders[] = bg_migrate_order($o);
             }
-            $orders[] = bg_migrate_order($o);
         }
     }
-    return array('parts' => $parts, 'reports' => $reports, 'orders' => $orders, 'updatedAt' => isset($data['updatedAt']) ? $data['updatedAt'] : null);
+    $reports = array();
+    if (isset($data['reports']) && is_array($data['reports'])) {
+        foreach ($data['reports'] as $r) {
+            if (is_array($r) && isset($r['id'])) {
+                if (!isset($r['items']) || !is_array($r['items'])) {
+                    $r['items'] = array();
+                }
+                $reports[] = bg_migrate_report($r);
+            }
+        }
+    }
+    if (count($parts) === 0 && count($reports) === 0) {
+        return;
+    }
+
+    $BG_SNAP = array('parts' => array(), 'orders' => array(), 'reports' => array());
+    bg_db_save(array('parts' => $parts, 'reports' => $reports, 'orders' => $orders));
+    @rename($jsonFile, $jsonFile . '.imported');
+    @file_put_contents($DATA_DIR . '/.migrated', date('c'));
+    @error_log('[baogong] 已从 db.json 导入 SQLite：' . count($parts) . ' 零件 / ' . count($orders) . ' 订单 / ' . count($reports) . ' 报工单');
+}
+
+function bg_index_state($db)
+{
+    $out = array('parts' => array(), 'orders' => array(), 'reports' => array());
+    foreach ($db['parts'] as $p) {
+        $out['parts'][$p['id']] = md5(json_encode($p));
+    }
+    foreach ($db['orders'] as $o) {
+        $out['orders'][$o['id']] = md5(json_encode($o));
+    }
+    foreach ($db['reports'] as $r) {
+        $out['reports'][$r['id']] = md5(json_encode($r));
+    }
+    return $out;
+}
+
+function bg_db_load()
+{
+    global $BG_SNAP;
+    $pdo = bg_pdo();
+    $db = array('parts' => array(), 'reports' => array(), 'orders' => array(), 'updatedAt' => null);
+
+    foreach ($pdo->query('SELECT * FROM parts') as $row) {
+        $processes = json_decode(isset($row['processes']) ? $row['processes'] : '[]', true);
+        if (!is_array($processes)) {
+            $processes = array();
+        }
+        $db['parts'][] = array(
+            'id' => $row['id'],
+            'no' => $row['no'],
+            'name' => isset($row['name']) ? $row['name'] : '',
+            'material' => isset($row['material']) ? $row['material'] : '',
+            'note' => isset($row['note']) ? $row['note'] : '',
+            'stock' => (float)$row['stock'],
+            'image' => isset($row['image']) ? $row['image'] : '',
+            'processes' => $processes,
+            'price' => count($processes) ? (float)$processes[0]['price'] : 0,
+            'createdAt' => isset($row['created_at']) ? $row['created_at'] : '',
+            'updatedAt' => isset($row['updated_at']) ? $row['updated_at'] : '',
+        );
+    }
+
+    foreach ($pdo->query('SELECT * FROM orders') as $row) {
+        $db['orders'][] = array(
+            'id' => $row['id'],
+            'no' => $row['no'],
+            'date' => $row['date'],
+            'partId' => $row['part_id'],
+            'partNo' => $row['part_no'],
+            'partName' => isset($row['part_name']) ? $row['part_name'] : '',
+            'process' => isset($row['process']) ? $row['process'] : '',
+            'qty' => (float)$row['qty'],
+            'note' => isset($row['note']) ? $row['note'] : '',
+            'createdAt' => isset($row['created_at']) ? $row['created_at'] : '',
+            'updatedAt' => isset($row['updated_at']) ? $row['updated_at'] : '',
+        );
+    }
+
+    $itemsBy = array();
+    foreach ($pdo->query('SELECT * FROM report_items ORDER BY report_id, sort, id') as $row) {
+        $itemsBy[$row['report_id']][] = array(
+            'partId' => $row['part_id'],
+            'partNo' => $row['part_no'],
+            'partName' => $row['part_name'],
+            'process' => $row['process'],
+            'qty' => (float)$row['qty'],
+            'price' => (float)$row['price'],
+            'amount' => (float)$row['amount'],
+            'orderId' => $row['order_id'],
+            'orderNo' => $row['order_no'],
+        );
+    }
+
+    foreach ($pdo->query('SELECT * FROM reports') as $row) {
+        $images = json_decode(isset($row['images']) ? $row['images'] : '[]', true);
+        if (!is_array($images)) {
+            $images = array();
+        }
+        $db['reports'][] = array(
+            'id' => $row['id'],
+            'no' => $row['no'],
+            'date' => $row['date'],
+            'worker' => $row['worker'],
+            'workshop' => $row['workshop'],
+            'note' => $row['note'],
+            'orderId' => $row['order_id'],
+            'orderNo' => $row['order_no'],
+            'items' => isset($itemsBy[$row['id']]) ? $itemsBy[$row['id']] : array(),
+            'images' => $images,
+            'createdAt' => isset($row['created_at']) ? $row['created_at'] : '',
+            'updatedAt' => isset($row['updated_at']) ? $row['updated_at'] : '',
+        );
+    }
+
+    $BG_SNAP = bg_index_state($db);
+    return $db;
+}
+
+function bg_sync_parts($pdo, $parts)
+{
+    global $BG_SNAP;
+    $stmt = $pdo->prepare(
+        'INSERT INTO parts (id, no, name, material, note, stock, image, processes, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           no = excluded.no, name = excluded.name, material = excluded.material, note = excluded.note,
+           stock = excluded.stock, image = excluded.image, processes = excluded.processes, updated_at = excluded.updated_at'
+    );
+    $seen = array();
+    foreach ($parts as $p) {
+        $seen[$p['id']] = true;
+        $hash = md5(json_encode($p));
+        if (isset($BG_SNAP['parts'][$p['id']]) && $BG_SNAP['parts'][$p['id']] === $hash) {
+            continue;
+        }
+        $stmt->execute(array(
+            $p['id'],
+            $p['no'],
+            isset($p['name']) ? $p['name'] : '',
+            isset($p['material']) ? $p['material'] : '',
+            isset($p['note']) ? $p['note'] : '',
+            isset($p['stock']) ? (float)$p['stock'] : 0,
+            isset($p['image']) ? $p['image'] : '',
+            json_encode(isset($p['processes']) ? $p['processes'] : array(), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+            isset($p['createdAt']) ? $p['createdAt'] : gmdate('Y-m-d\TH:i:s\Z'),
+            isset($p['updatedAt']) ? $p['updatedAt'] : gmdate('Y-m-d\TH:i:s\Z'),
+        ));
+    }
+    $del = $pdo->prepare('DELETE FROM parts WHERE id = ?');
+    foreach (array_keys($BG_SNAP['parts']) as $id) {
+        if (!isset($seen[$id])) {
+            $del->execute(array($id));
+        }
+    }
+}
+
+function bg_sync_orders($pdo, $orders)
+{
+    global $BG_SNAP;
+    $stmt = $pdo->prepare(
+        'INSERT INTO orders (id, no, date, part_id, part_no, part_name, process, qty, note, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           no = excluded.no, date = excluded.date, part_id = excluded.part_id, part_no = excluded.part_no,
+           part_name = excluded.part_name, process = excluded.process, qty = excluded.qty, note = excluded.note,
+           updated_at = excluded.updated_at'
+    );
+    $seen = array();
+    foreach ($orders as $o) {
+        $seen[$o['id']] = true;
+        $hash = md5(json_encode($o));
+        if (isset($BG_SNAP['orders'][$o['id']]) && $BG_SNAP['orders'][$o['id']] === $hash) {
+            continue;
+        }
+        $stmt->execute(array(
+            $o['id'],
+            $o['no'],
+            isset($o['date']) ? $o['date'] : '',
+            isset($o['partId']) ? $o['partId'] : '',
+            isset($o['partNo']) ? $o['partNo'] : '',
+            isset($o['partName']) ? $o['partName'] : '',
+            isset($o['process']) ? $o['process'] : '',
+            isset($o['qty']) ? (float)$o['qty'] : 0,
+            isset($o['note']) ? $o['note'] : '',
+            isset($o['createdAt']) ? $o['createdAt'] : gmdate('Y-m-d\TH:i:s\Z'),
+            isset($o['updatedAt']) ? $o['updatedAt'] : gmdate('Y-m-d\TH:i:s\Z'),
+        ));
+    }
+    $del = $pdo->prepare('DELETE FROM orders WHERE id = ?');
+    foreach (array_keys($BG_SNAP['orders']) as $id) {
+        if (!isset($seen[$id])) {
+            $del->execute(array($id));
+        }
+    }
+}
+
+function bg_sync_reports($pdo, $reports)
+{
+    global $BG_SNAP;
+    $stmt = $pdo->prepare(
+        'INSERT INTO reports (id, no, date, worker, workshop, note, order_id, order_no, images, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           no = excluded.no, date = excluded.date, worker = excluded.worker, workshop = excluded.workshop,
+           note = excluded.note, order_id = excluded.order_id, order_no = excluded.order_no,
+           images = excluded.images, updated_at = excluded.updated_at'
+    );
+    $delItems = $pdo->prepare('DELETE FROM report_items WHERE report_id = ?');
+    $insItem = $pdo->prepare(
+        'INSERT INTO report_items (report_id, part_id, part_no, part_name, process, qty, price, amount, order_id, order_no, sort)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    );
+    $seen = array();
+    foreach ($reports as $r) {
+        $seen[$r['id']] = true;
+        $hash = md5(json_encode($r));
+        if (isset($BG_SNAP['reports'][$r['id']]) && $BG_SNAP['reports'][$r['id']] === $hash) {
+            continue;
+        }
+        $stmt->execute(array(
+            $r['id'],
+            $r['no'],
+            isset($r['date']) ? $r['date'] : '',
+            isset($r['worker']) ? $r['worker'] : '',
+            isset($r['workshop']) ? $r['workshop'] : '',
+            isset($r['note']) ? $r['note'] : '',
+            isset($r['orderId']) ? $r['orderId'] : '',
+            isset($r['orderNo']) ? $r['orderNo'] : '',
+            json_encode(isset($r['images']) ? $r['images'] : array(), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+            isset($r['createdAt']) ? $r['createdAt'] : gmdate('Y-m-d\TH:i:s\Z'),
+            isset($r['updatedAt']) ? $r['updatedAt'] : gmdate('Y-m-d\TH:i:s\Z'),
+        ));
+        $delItems->execute(array($r['id']));
+        $items = isset($r['items']) && is_array($r['items']) ? $r['items'] : array();
+        $sort = 0;
+        foreach ($items as $it) {
+            $insItem->execute(array(
+                $r['id'],
+                isset($it['partId']) ? $it['partId'] : '',
+                isset($it['partNo']) ? $it['partNo'] : '',
+                isset($it['partName']) ? $it['partName'] : '',
+                isset($it['process']) ? $it['process'] : '',
+                isset($it['qty']) ? (float)$it['qty'] : 0,
+                isset($it['price']) ? (float)$it['price'] : 0,
+                isset($it['amount']) ? (float)$it['amount'] : 0,
+                isset($it['orderId']) ? $it['orderId'] : '',
+                isset($it['orderNo']) ? $it['orderNo'] : '',
+                $sort,
+            ));
+            $sort++;
+        }
+    }
+    $delReport = $pdo->prepare('DELETE FROM reports WHERE id = ?');
+    foreach (array_keys($BG_SNAP['reports']) as $id) {
+        if (!isset($seen[$id])) {
+            $delItems->execute(array($id));
+            $delReport->execute(array($id));
+        }
+    }
 }
 
 function bg_db_save($db)
 {
-    global $DB_FILE;
-    $db['updatedAt'] = gmdate('Y-m-d\TH:i:s\Z');
-    $json = json_encode($db, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if ($json === false) {
-        bg_fail(500, '数据编码失败');
+    global $BG_SNAP;
+    $pdo = bg_pdo();
+    if ($BG_SNAP === null) {
+        bg_db_load();
     }
-    $fp = @fopen($DB_FILE . '.lock', 'c');
-    if ($fp) {
-        @flock($fp, LOCK_EX);
-    }
-    $tmp = $DB_FILE . '.tmp';
-    $ok = @file_put_contents($tmp, $json, LOCK_EX);
-    if ($ok === false) {
-        if ($fp) {
-            @flock($fp, LOCK_UN);
-            @fclose($fp);
+    $pdo->beginTransaction();
+    try {
+        bg_sync_parts($pdo, isset($db['parts']) ? $db['parts'] : array());
+        bg_sync_orders($pdo, isset($db['orders']) ? $db['orders'] : array());
+        bg_sync_reports($pdo, isset($db['reports']) ? $db['reports'] : array());
+        $pdo->commit();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
         }
-        bg_fail(500, '数据保存失败，请检查 data 目录权限');
+        throw $e;
     }
-    @rename($tmp, $DB_FILE);
-    if ($fp) {
-        @flock($fp, LOCK_UN);
-        @fclose($fp);
+    $BG_SNAP = bg_index_state($db);
+}
+
+function bg_sqlite_backup_copy()
+{
+    global $BACKUP_DIR, $DB_FILE;
+    if (!is_file($DB_FILE)) {
+        return;
+    }
+    $pdo = bg_pdo();
+    $target = $BACKUP_DIR . '/db-' . date('Ymd-His') . '-' . substr((string)microtime(true), -4) . '.sqlite';
+    try {
+        $pdo->exec('VACUUM INTO ' . $pdo->quote($target));
+    } catch (Throwable $e) {
+        @copy($DB_FILE, $target);
+    }
+    $files = glob($BACKUP_DIR . '/db-*.sqlite');
+    if (is_array($files)) {
+        sort($files);
+        while (count($files) > 30) {
+            @unlink(array_shift($files));
+        }
     }
 }
 
@@ -405,23 +742,12 @@ function bg_backup_once()
         return;
     }
     @file_put_contents($stamp, (string)time());
-    @copy($DB_FILE, $BACKUP_DIR . '/db-' . date('Ymd-His') . '.json');
-    $files = glob($BACKUP_DIR . '/db-*.json');
-    if (is_array($files)) {
-        sort($files);
-        while (count($files) > 30) {
-            @unlink(array_shift($files));
-        }
-    }
+    bg_sqlite_backup_copy();
 }
 
 function bg_backup_force()
 {
-    global $DB_FILE, $BACKUP_DIR;
-    if (!is_file($DB_FILE)) {
-        return;
-    }
-    @copy($DB_FILE, $BACKUP_DIR . '/db-' . date('Ymd-His') . '-restore.json');
+    bg_sqlite_backup_copy();
 }
 
 function bg_sorted($list)
@@ -1047,7 +1373,7 @@ if (!bg_authed()) {
 
 switch ($action) {
     case 'data.stats':
-        bg_json(200, bg_data_stats('json'));
+        bg_json(200, bg_data_stats('sqlite'));
         break;
 
     case 'state':
