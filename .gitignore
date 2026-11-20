@@ -1,0 +1,10 @@
+data/
+server.log
+server.pid
+app.env
+.shots/
+.testdata*/
+.test-*.py
+.test-*.mjs
+.test-*.log
+node_modules/
