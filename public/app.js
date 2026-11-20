@@ -32,15 +32,155 @@ function fmtBytes(n) {
   return (v / 1024 / 1024 / 1024).toFixed(2) + ' GB';
 }
 
+/* 输入防抖：搜索框连续输入时只在停顿后渲染一次 */
+function debounce(fn, wait = 220) {
+  let timer = 0;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), wait);
+  };
+}
+
 function todayStr() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-function currentMonth() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+/* ==================================================================== 日期范围 */
+
+const RANGE_PRESETS = [
+  { key: 'month', label: '本月' },
+  { key: 'week', label: '近一周' },
+  { key: 'month1', label: '近一个月' },
+  { key: 'month3', label: '近三个月' },
+  { key: 'year1', label: '近一年' },
+  { key: 'all', label: '全部' },
+  { key: 'custom', label: '自定义' },
+];
+
+function dstr(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
+
+function monthStartOf(dateStr) {
+  return String(dateStr || todayStr()).slice(0, 7) + '-01';
+}
+
+function monthEndOf(dateStr) {
+  const s = String(dateStr || todayStr());
+  return dstr(new Date(Number(s.slice(0, 4)), Number(s.slice(5, 7)), 0));
+}
+
+function shiftDate(base, months, days) {
+  const d = new Date(base + 'T00:00:00');
+  d.setMonth(d.getMonth() + months);
+  d.setDate(d.getDate() + days);
+  return dstr(d);
+}
+
+function rangePresetValue(key) {
+  const today = todayStr();
+  if (key === 'month') return { from: monthStartOf(today), to: monthEndOf(today) };
+  if (key === 'week') return { from: shiftDate(today, 0, -6), to: today };
+  if (key === 'month1') return { from: shiftDate(today, -1, 1), to: today };
+  if (key === 'month3') return { from: shiftDate(today, -3, 1), to: today };
+  if (key === 'year1') return { from: shiftDate(today, -12, 1), to: today };
+  return { from: '', to: '' };
+}
+
+/* 预置范围每次打开页面都按今天重算，自定义范围保持原样 */
+function resolveRange(range) {
+  if (!range) return { key: 'all', from: '', to: '' };
+  if (range.key === 'custom') return range;
+  const v = rangePresetValue(range.key);
+  return { key: range.key, from: v.from, to: v.to };
+}
+
+function rangeLabel(range) {
+  if (range.key === 'custom') {
+    if (!range.from && !range.to) return '自定义';
+    return `${range.from || '不限'} ~ ${range.to || '不限'}`;
+  }
+  const hit = RANGE_PRESETS.find((x) => x.key === range.key);
+  return hit ? hit.label : '全部';
+}
+
+function rangeFilterHtml(id, range) {
+  return `<div class="range-pick" id="${id}">
+      <button type="button" class="range-trigger"><span>${esc(rangeLabel(range))}</span><i>▾</i></button>
+      <div class="range-panel" hidden>
+        <div class="range-quick">
+          ${RANGE_PRESETS.map(
+            (p) => `<button type="button" data-key="${p.key}"${p.key === range.key ? ' class="on"' : ''}>${p.label}</button>`
+          ).join('')}
+        </div>
+        <div class="range-custom"${range.key === 'custom' ? '' : ' hidden'}>
+          <label>开始<input class="input" type="date" data-w="from" value="${esc(range.from || '')}"></label>
+          <label>结束<input class="input" type="date" data-w="to" value="${esc(range.to || '')}"></label>
+          <button type="button" class="btn btn-primary" data-w="ok">确定</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function setupRangeFilter(el, range, onChange) {
+  if (!el) return;
+  const panel = $('.range-panel', el);
+  const trigger = $('.range-trigger', el);
+  const custom = $('.range-custom', el);
+  const fromInput = $('[data-w="from"]', el);
+  const toInput = $('[data-w="to"]', el);
+  let state = { key: range.key, from: range.from, to: range.to };
+
+  function paint() {
+    $('span', trigger).textContent = rangeLabel(state);
+    $$('.range-quick [data-key]', el).forEach((b) => b.classList.toggle('on', b.dataset.key === state.key));
+    fromInput.value = state.from || '';
+    toInput.value = state.to || '';
+    custom.hidden = state.key !== 'custom';
+  }
+
+  paint();
+
+  trigger.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const show = panel.hidden;
+    $$('.range-panel').forEach((p) => (p.hidden = true));
+    panel.hidden = !show;
+  });
+  panel.addEventListener('click', (e) => e.stopPropagation());
+
+  $$('.range-quick [data-key]', el).forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const key = btn.dataset.key;
+      if (key === 'custom') {
+        custom.hidden = false;
+        if (!fromInput.value) fromInput.value = monthStartOf(todayStr());
+        if (!toInput.value) toInput.value = todayStr();
+        return;
+      }
+      const v = rangePresetValue(key);
+      state = { key, from: v.from, to: v.to };
+      paint();
+      panel.hidden = true;
+      onChange(state);
+    });
+  });
+
+  $('[data-w="ok"]', el).addEventListener('click', () => {
+    const from = fromInput.value;
+    const to = toInput.value;
+    if (from && to && from > to) return toast('开始日期不能晚于结束日期', 'err');
+    state = { key: 'custom', from, to };
+    paint();
+    panel.hidden = true;
+    onChange(state);
+  });
+}
+
+document.addEventListener('click', () => {
+  $$('.range-panel').forEach((p) => (p.hidden = true));
+});
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
@@ -54,19 +194,22 @@ const state = {
   parts: [],
   reports: [],
   orders: [],
+  plugins: [],
   auth: false,
   imageBase: '/img/',
 };
 
 let partQuery = '';
+let partLimit = 100;
 let reportQuery = '';
-let reportMonth = currentMonth();
+let reportLimit = 50;
+let reportRange = { key: 'month', from: '', to: '' };
 
-let statFrom = currentMonth() + '-01';
-let statTo = todayStr();
+let statRange = { key: 'month', from: '', to: '' };
 let statOrderIds = new Set();
 let statPartIds = new Set();
 let statQuery = '';
+let statLimit = 100;
 
 /* ==================================================================== 图标 */
 
@@ -99,6 +242,8 @@ const PATHS = {
   alert: '<circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/>',
   file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
+  settings:
+    '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.52-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.08a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
 };
 
 const icon = (name, size = 18) =>
@@ -231,6 +376,21 @@ async function refreshState() {
   orderUsageCache = null;
 }
 
+async function refreshPlugins() {
+  try {
+    const data = await api('GET', 'api.php?action=plugins.list');
+    state.plugins = data.plugins || [];
+  } catch (err) {
+    if (err.status === 401) throw err;
+    state.plugins = [];
+  }
+}
+
+/* 已启用且支持报工识别（report.ocr）的插件 */
+function ocrPlugins() {
+  return state.plugins.filter((p) => p.enabled && (p.capabilities || []).includes('report.ocr'));
+}
+
 /* ==================================================================== 外壳 */
 
 function navItem(key, hash, ic, label) {
@@ -265,8 +425,9 @@ function renderShell() {
       </nav>
       <div class="side-foot">
         <button class="side-btn" data-action="backup">${icon('database', 16)}数据备份</button>
+        <a class="side-btn" href="#/settings">${icon('settings', 16)}识别插件设置</a>
         ${state.auth ? `<button class="side-btn" data-action="logout">${icon('logout', 16)}退出登录</button>` : ''}
-        <div class="side-ver">v1.2 · 数据保存在服务器</div>
+        <div class="side-ver">v2.1 · 数据保存在服务器</div>
       </div>
     </aside>
 
@@ -328,6 +489,7 @@ function route() {
 
   if (key === 'stats') return viewStats();
   if (key === 'data') return viewDataStats();
+  if (key === 'settings') return viewSettings();
 
   location.replace('#/parts');
 }
@@ -637,10 +799,14 @@ function viewParts() {
   view.innerHTML = `<div class="part-list" id="partList"></div>`;
   renderPartRows();
 
-  $('#partSearch').addEventListener('input', (e) => {
-    partQuery = e.target.value;
-    renderPartRows();
-  });
+  $('#partSearch').addEventListener(
+    'input',
+    debounce((e) => {
+      partQuery = e.target.value;
+      partLimit = 100;
+      renderPartRows();
+    })
+  );
 }
 
 function renderPartRows() {
@@ -658,7 +824,9 @@ function renderPartRows() {
     return;
   }
 
-  box.innerHTML = list
+  const shown = list.slice(0, partLimit);
+
+  box.innerHTML = shown
     .map((p) => {
       const u = usageCache.get(p.id) || { qty: 0, times: 0 };
       const ps = partProcesses(p);
@@ -694,7 +862,18 @@ function renderPartRows() {
         </div>
       </div>`;
     })
-    .join('');
+    .join('') +
+    (list.length > shown.length
+      ? `<div class="load-more"><button class="btn btn-ghost" id="loadMoreParts">加载更多（还有 ${list.length - shown.length} 个）</button></div>`
+      : '');
+
+  const more = $('#loadMoreParts');
+  if (more) {
+    more.addEventListener('click', () => {
+      partLimit += 100;
+      renderPartRows();
+    });
+  }
 
   $$('.stock-input', box).forEach((input) => {
     input.addEventListener('change', () => saveStock(input));
@@ -1031,15 +1210,14 @@ function openPartsImport() {
 
 /* ==================================================================== 订单 */
 
-let orderFrom = '';
-let orderTo = '';
+let orderRange = { key: 'all', from: '', to: '' };
 let orderQuery = '';
 let orderLimit = 100;
 
 function filteredOrders() {
   let list = state.orders.slice();
-  if (orderFrom) list = list.filter((o) => String(o.date || '') >= orderFrom);
-  if (orderTo) list = list.filter((o) => String(o.date || '') <= orderTo);
+  if (orderRange.from) list = list.filter((o) => String(o.date || '') >= orderRange.from);
+  if (orderRange.to) list = list.filter((o) => String(o.date || '') <= orderRange.to);
   const q = orderQuery.trim().toLowerCase();
   if (q) {
     list = list.filter((o) =>
@@ -1097,10 +1275,10 @@ function viewOrders() {
     return;
   }
 
+  orderRange = resolveRange(orderRange);
   view.innerHTML = `
     <div class="toolbar order-filter">
-      <label class="mini-field">开始<input class="input" id="ordFrom" type="date" value="${esc(orderFrom)}"></label>
-      <label class="mini-field">结束<input class="input" id="ordTo" type="date" value="${esc(orderTo)}"></label>
+      ${rangeFilterHtml('ordRange', orderRange)}
       <div class="search">${icon('search', 16)}<input class="input" id="ordSearch" placeholder="搜索订单号 / 零件 / 工序" value="${esc(orderQuery)}" autocomplete="off"></div>
     </div>
     <div class="order-list" id="orderList"></div>`;
@@ -1128,21 +1306,19 @@ function viewOrders() {
   }
 
   renderList();
-  $('#ordFrom').addEventListener('change', (e) => {
-    orderFrom = e.target.value;
+  setupRangeFilter($('#ordRange'), orderRange, (r) => {
+    orderRange = r;
     orderLimit = 100;
     renderList();
   });
-  $('#ordTo').addEventListener('change', (e) => {
-    orderTo = e.target.value;
-    orderLimit = 100;
-    renderList();
-  });
-  $('#ordSearch').addEventListener('input', (e) => {
-    orderQuery = e.target.value;
-    orderLimit = 100;
-    renderList();
-  });
+  $('#ordSearch').addEventListener(
+    'input',
+    debounce((e) => {
+      orderQuery = e.target.value;
+      orderLimit = 100;
+      renderList();
+    })
+  );
 }
 
 function viewOrderForm(id, presetPartId) {
@@ -1256,22 +1432,10 @@ function viewOrderForm(id, presetPartId) {
 
 /* ==================================================================== 报工记录 */
 
-function monthOptions() {
-  const set = new Set();
-  const now = new Date();
-  for (let i = 0; i < 18; i++) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    set.add(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
-  }
-  for (const r of state.reports) {
-    if (/^\d{4}-\d{2}/.test(r.date || '')) set.add(r.date.slice(0, 7));
-  }
-  return Array.from(set).sort().reverse();
-}
-
 function filteredReports() {
   let list = state.reports.slice();
-  if (reportMonth) list = list.filter((r) => String(r.date || '').startsWith(reportMonth));
+  if (reportRange.from) list = list.filter((r) => String(r.date || '') >= reportRange.from);
+  if (reportRange.to) list = list.filter((r) => String(r.date || '') <= reportRange.to);
   const q = reportQuery.trim().toLowerCase();
   if (q) {
     list = list.filter(
@@ -1358,8 +1522,7 @@ function reportCard(r) {
 }
 
 function viewReports() {
-  const months = monthOptions();
-  if (reportMonth && !months.includes(reportMonth)) reportMonth = currentMonth();
+  reportRange = resolveRange(reportRange);
   setHead(
     '报工单记录',
     '',
@@ -1369,29 +1532,26 @@ function viewReports() {
 
   $('#view').innerHTML = `
     <div class="toolbar">
-      <select class="select" id="repMonth" style="width:140px">
-        <option value="">全部月份</option>
-        ${months
-          .map((m) => {
-            const [y, mm] = m.split('-');
-            return `<option value="${m}" ${m === reportMonth ? 'selected' : ''}>${y}年${Number(mm)}月</option>`;
-          })
-          .join('')}
-      </select>
+      ${rangeFilterHtml('repRange', reportRange)}
       <div class="search">${icon('search', 16)}<input class="input" id="repSearch" placeholder="搜索单号 / 人员 / 订单 / 零件" value="${esc(reportQuery)}" autocomplete="off"></div>
     </div>
     <div class="stats" id="stats"></div>
     <div class="report-list" id="reportList"></div>`;
 
   renderReportContent();
-  $('#repMonth').addEventListener('change', (e) => {
-    reportMonth = e.target.value;
+  setupRangeFilter($('#repRange'), reportRange, (r) => {
+    reportRange = r;
+    reportLimit = 50;
     renderReportContent();
   });
-  $('#repSearch').addEventListener('input', (e) => {
-    reportQuery = e.target.value;
-    renderReportContent();
-  });
+  $('#repSearch').addEventListener(
+    'input',
+    debounce((e) => {
+      reportQuery = e.target.value;
+      reportLimit = 50;
+      renderReportContent();
+    })
+  );
 }
 
 function renderReportContent() {
@@ -1407,11 +1567,25 @@ function renderReportContent() {
   const box = $('#reportList');
   if (!list.length) {
     box.innerHTML = state.reports.length
-      ? `<div class="empty" style="padding:44px 20px"><h3>这个条件下没有记录</h3><p>换个月份，或清空搜索关键词。</p></div>`
+      ? `<div class="empty" style="padding:44px 20px"><h3>这个条件下没有记录</h3><p>换个日期范围，或清空搜索关键词。</p></div>`
       : emptyState('clipboard', '还没有报工记录', '点击「新增报工」，选择零件、填写数量，一张报工单几秒钟就能录完。', '新增报工', 'new-report');
     return;
   }
-  box.innerHTML = list.map(reportCard).join('');
+
+  const shown = list.slice(0, reportLimit);
+  box.innerHTML =
+    shown.map(reportCard).join('') +
+    (list.length > shown.length
+      ? `<div class="load-more"><button class="btn btn-ghost" id="loadMoreReports">加载更多（还有 ${list.length - shown.length} 张）</button></div>`
+      : '');
+
+  const more = $('#loadMoreReports');
+  if (more) {
+    more.addEventListener('click', () => {
+      reportLimit += 50;
+      renderReportContent();
+    });
+  }
 }
 
 /* ==================================================================== 报工表单 */
@@ -1469,6 +1643,24 @@ function orderCellHtml(it, part) {
   return `<div class="order-cell"><select class="select" data-f="order">${opts.join('')}</select><div class="order-hint ${
     selected && Number(it.qty) > orderRemaining(selected, draft ? draft.id : null) ? 'warn' : ''
   }">${esc(hint)}</div></div>`;
+}
+
+function ocrBarHtml() {
+  const plugin = ocrPlugins()[0] || null;
+  return `<div class="ocr-bar">
+      <button type="button" class="ocr-main" id="ocrBtn" ${plugin ? '' : 'disabled'}>
+        <span class="ocr-ic">${icon('camera', 22)}</span>
+        <span class="ocr-txt">
+          <b>拍照识别报工单</b>
+          <i>${plugin ? '自动填充日期、零件、工序、数量' : '未启用识别插件，请先在「识别设置」中启用'}</i>
+        </span>
+      </button>
+      <div class="ocr-meta">
+        <span>${plugin ? esc(plugin.name) : '——'}</span>
+        <a class="ocr-link" href="#/settings">识别设置</a>
+      </div>
+    </div>
+    <div class="ocr-result" id="ocrResult" hidden></div>`;
 }
 
 function itemRowHtml(it, idx) {
@@ -1529,6 +1721,7 @@ function viewReportForm(id, presetPartId) {
 
   $('#view').innerHTML = `
     <form class="form-card wide" id="reportForm" novalidate>
+      ${ocrBarHtml()}
       <div class="form-grid">
         <div class="field">
           <label>报工单号</label>
@@ -1702,6 +1895,483 @@ function viewReportForm(id, presetPartId) {
 
   renderItems();
   renderAttachments();
+
+  /* ---------------- 拍照识别（插件） ---------------- */
+
+  const ocrPlugin = ocrPlugins()[0] || null;
+
+  function normKey(v) {
+    return String(v === undefined || v === null ? '' : v)
+      .replace(/[－—–‑　]/g, '-')
+      .replace(/\s+/g, '')
+      .toUpperCase();
+  }
+
+  /* 去掉空格、短横线、点、斜杠等分隔符，90535 R183 与 90535-R183 视为同一图号 */
+  function compactKey(v) {
+    return normKey(v).replace(/[^0-9A-Z\u4e00-\u9fa5]/g, '');
+  }
+
+  function simKey(a, b) {
+    if (!a.length || !b.length) return 0;
+    const m = a.length;
+    const n = b.length;
+    let prev = Array.from({ length: n + 1 }, (_, i) => i);
+    for (let i = 1; i <= m; i++) {
+      const cur = [i];
+      for (let j = 1; j <= n; j++) {
+        cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      }
+      prev = cur;
+    }
+    return 1 - prev[n] / Math.max(m, n);
+  }
+
+  /* 去掉日期写法，避免 10.11 与图号粘成一条长串 */
+  function stripDate(s) {
+    return String(s)
+      .replace(/20\d{2}\s*[-\/年.]\s*\d{1,2}\s*[-\/月.]\s*\d{1,2}\s*日?/g, ' ')
+      .replace(/(?<!\d)\d{1,2}\s*[-\/.]\s*\d{1,2}(?!\d)\s*日?/g, ' ');
+  }
+
+  /* 在文本中按图号模糊匹配零件：精确 → 去分隔符 → 图号段 → 相似度（容忍 1-2 个 OCR 错字） */
+  function fuzzyPart(text) {
+    const bare = stripDate(text);
+    const raw = normKey(bare);
+    const flat = compactKey(bare);
+    if (!raw) return null;
+    /* 最长字母数字段：手写常省略图号前缀，90535 R183 → TD90535R183 */
+    const runs = flat.match(/[0-9A-Z]{4,}/g) || [];
+    let maxRun = 0;
+    runs.forEach((r) => (maxRun = Math.max(maxRun, r.length)));
+    const longRuns = runs.filter((r) => r.length === maxRun);
+    let best = null;
+    let bestScore = 0;
+    for (const p of state.parts) {
+      const no = normKey(p.no);
+      const noC = compactKey(p.no);
+      const nm = normKey(p.name);
+      let score = 0;
+      if (no && raw.includes(no)) score = 1;
+      else if (noC.length >= 4 && flat.includes(noC)) score = 0.96;
+      else {
+        for (const r of longRuns) {
+          if (r.length < 4) continue;
+          /* 图号尾部可能粘上数量：523R30130 → 取前缀 523R301 */
+          for (let l = Math.min(r.length, noC.length); l >= 4; l--) {
+            const pre = r.slice(0, l);
+            if (noC.includes(pre)) {
+              score = Math.max(score, 0.95);
+              break;
+            }
+            if (pre.includes(noC)) {
+              score = Math.max(score, 0.93);
+              break;
+            }
+          }
+          /* 缺字 / 多字：30607R22 ≈ T306077R22 */
+          if (score < 0.9) {
+            const sim = simKey(r, noC);
+            if (sim >= 0.72) score = Math.max(score, 0.8 + (sim - 0.72) * 0.5);
+          }
+        }
+        if (!score && noC.length >= 5) {
+          const len = noC.length;
+          let seg = 0;
+          for (let i = 0; i + len <= flat.length; i++) {
+            seg = Math.max(seg, simKey(flat.slice(i, i + len), noC));
+          }
+          if (seg >= 0.75) score = 0.72 + (seg - 0.75) * 0.5;
+        }
+      }
+      if (!score && nm.length >= 2 && raw.includes(nm)) score = 0.9;
+      if (score > bestScore) {
+        bestScore = score;
+        best = p;
+      }
+    }
+    return best ? { part: best, score: bestScore } : null;
+  }
+
+  function matchPart(rec) {
+    const no = normKey(rec.partNo);
+    const name = normKey(rec.partName);
+    let hit = no ? state.parts.find((p) => normKey(p.no) === no) : null;
+    if (!hit && no) hit = state.parts.find((p) => compactKey(p.no) === compactKey(no));
+    if (!hit && name) hit = state.parts.find((p) => normKey(p.name) === name);
+    if (!hit && no) hit = state.parts.find((p) => p.name && normKey(p.name) === no);
+    if (!hit) {
+      const fz = fuzzyPart([rec.partNo, rec.partName].filter(Boolean).join(' '));
+      if (fz) hit = fz.part;
+    }
+    return hit || null;
+  }
+
+  /* 工序同义字典：铣加工 ↔ 铣，钻孔 ↔ 钻，车外圆 ↔ 车 … */
+  const PROC_ALIAS = {
+    车: ['车削', '车加工', '车外圆', '车内孔', '车工', '车'],
+    铣: ['铣削', '铣加工', '铣工', '铣面', '铣槽', '铣', '锐加工', '锐'],
+    钻: ['钻孔', '钻削', '钻工', '打孔', '钻'],
+    磨: ['磨削', '磨工', '平磨', '外圆磨', '内圆磨', '磨'],
+    钳: ['钳工', '去毛刺', '攻丝', '倒角', '钳'],
+    镗: ['镗孔', '镗削', '镗'],
+    插: ['插齿', '插'],
+    滚: ['滚齿', '滚'],
+    线: ['线切割', '电火花', '线'],
+    热: ['热处理', '淬火', '调质', '发黑', '热'],
+    焊: ['焊接', '焊工', '焊'],
+  };
+
+  function procBase(text) {
+    const s = normKey(text);
+    for (const base of Object.keys(PROC_ALIAS)) {
+      for (const w of PROC_ALIAS[base]) {
+        if (s.includes(w)) return base;
+      }
+    }
+    /* 设置页「工序同义字典」里的自定义别名 */
+    const extra = customProcAliases();
+    for (const base of Object.keys(extra)) {
+      if (s.includes(normKey(base))) return base;
+      for (const w of extra[base]) {
+        if (s.includes(normKey(w))) return base;
+      }
+    }
+    return '';
+  }
+
+  function customProcAliases() {
+    const p = state.plugins.find((x) => x.id === 'baidu-ocr');
+    const f = p && (p.settings || []).find((x) => x.key === 'procAlias');
+    const raw = f && f.value ? String(f.value) : '';
+    const map = {};
+    raw.split(/\r?\n/).forEach((ln) => {
+      const line = ln.trim();
+      if (!line || /^[#;]/.test(line)) return;
+      const m = line.match(/^([^:：=]+)[:：=](.+)$/);
+      if (!m) return;
+      const base = m[1].trim();
+      if (!base) return;
+      map[base] = m[2].split(/[,，、\s]+/).filter(Boolean);
+    });
+    return map;
+  }
+
+  function matchProcessName(part, guess) {
+    const ps = partProcesses(part);
+    const g = normKey(guess);
+    if (!g) return '';
+    const exact = ps.find((x) => normKey(x.name) === g);
+    if (exact) return exact.name;
+    const base = procBase(g);
+    if (base) {
+      const hit = ps.find((x) => procBase(x.name) === base);
+      if (hit) return hit.name;
+    }
+    return '';
+  }
+
+  function pickProcess(part, guess) {
+    const ps = partProcesses(part);
+    if (!ps.length) return { name: guess || '', price: '' };
+    const name = matchProcessName(part, guess) || ps[0].name;
+    const hit = ps.find((x) => x.name === name);
+    return { name, price: hit ? hit.price : '' };
+  }
+
+  function applyRecognized(res) {
+    const f = res.fields || {};
+    let dateFilled = false;
+    if (f.date) {
+      $('#rDate').value = f.date;
+      dateFilled = true;
+    }
+
+    const recs = Array.isArray(f.items) ? f.items : [];
+    const notes = [];
+    let filled = 0;
+    if (recs.length) {
+      if (draft.items.every((it) => !it.partId)) draft.items = [];
+      for (const rec of recs) {
+        const part = matchPart(rec);
+        if (!part) {
+          notes.push(`零件库中没有「${rec.partNo || rec.partName || '未识别'}」，该行未填充`);
+          continue;
+        }
+        const p = pickProcess(part, rec.process);
+        if (rec.process && !matchProcessName(part, rec.process) && partProcesses(part).length) {
+          notes.push(`${part.no} 的工序「${rec.process}」不在工序表，已改用「${p.name}」`);
+        }
+        draft.items.push({
+          key: uid(),
+          partId: part.id,
+          process: p.name,
+          qty: Number(rec.qty) > 0 ? rec.qty : 1,
+          price: p.price,
+          orderId: '',
+        });
+        filled += 1;
+      }
+      if (!draft.items.length) draft.items.push(newItem());
+      renderItems();
+    }
+    return { filled, dateFilled, notes };
+  }
+
+  /* ---------- 手动填充：点选识别原文 ---------- */
+
+  /* 从一行原文里解析日期 / 零件 / 工序 / 数量，供手动填充使用 */
+  function parseOcrLine(text) {
+    const out = { date: '', part: null, partScore: 0, process: '', qty: 0 };
+    const s = String(text || '');
+
+    let m = s.match(/(20\d{2})\s*[-\/年.]\s*(\d{1,2})\s*[-\/月.]\s*(\d{1,2})/);
+    if (m) {
+      const dt = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+      if (dt.getMonth() === Number(m[2]) - 1) out.date = fmtDate(dt);
+    } else {
+      m = s.match(/(?<!\d)(\d{1,2})\s*[-\/.月]\s*(\d{1,2})(?!\d)\s*日?/);
+      if (m) {
+        const y = new Date().getFullYear();
+        const dt = new Date(y, Number(m[1]) - 1, Number(m[2]));
+        if (dt.getMonth() === Number(m[1]) - 1 && dt.getDate() === Number(m[2])) out.date = fmtDate(dt);
+      }
+    }
+
+    const fz = fuzzyPart(s);
+    if (fz) {
+      out.part = fz.part;
+      out.partScore = fz.score;
+      const base = procBase(s);
+      if (base) {
+        const hit = partProcesses(fz.part).find((x) => procBase(x.name) === base);
+        if (hit) out.process = hit.name;
+      }
+    }
+    /* 数量解析前先去掉日期写法，避免把 2026-11-20 里的 20 当数量 */
+    const qtyText = s
+      .replace(/20\d{2}\s*[-\/年.]\s*\d{1,2}\s*[-\/月.]\s*\d{1,2}\s*日?/g, ' ')
+      .replace(/(?<!\d)\d{1,2}\s*[-\/.]\s*\d{1,2}(?!\d)\s*日?/g, ' ');
+    out.qty = parseQty(qtyText, out.part);
+    return out;
+  }
+
+  function fmtDate(d) {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+
+  function parseQty(text, part) {
+    const partC = part ? compactKey(part.no) : '';
+    const list = [];
+    const re = /(\d{1,6}(?:\.\d{1,2})?)\s*(件|个|只|根|套|支|片)?/g;
+    let m;
+    while ((m = re.exec(text))) {
+      const v = Number(m[1]);
+      const unit = m[2] || '';
+      if (!(v > 0) || v > 100000) continue;
+      if (!unit && partC && partC.includes(m[1].replace('.', ''))) continue;
+      list.push({ v, unit });
+    }
+    for (let i = list.length - 1; i >= 0; i--) {
+      if (list[i].unit) return list[i].v;
+    }
+    return list.length ? list[list.length - 1].v : 0;
+  }
+
+  function partPriceOf(part, processName) {
+    const hit = partProcesses(part).find((x) => x.name === processName);
+    return hit ? hit.price : '';
+  }
+
+  /* 把识别面板里选好的零件 / 工序 / 数量追加成一条报工明细 */
+  function pushItemRow(part, processName, qty) {
+    const row = {
+      key: uid(),
+      partId: part.id,
+      process: processName || '',
+      qty: Number(qty) > 0 ? Number(qty) : 1,
+      price: partPriceOf(part, processName),
+      orderId: '',
+    };
+    if (draft.items.length === 1 && !draft.items[0].partId) draft.items[0] = row;
+    else draft.items.push(row);
+    renderItems();
+  }
+
+  function renderOcrResult(res, info) {
+    const box = $('#ocrResult');
+    const conf = Math.round((Number(res.confidence) || 0) * 100);
+    const warns = (res.warnings || []).concat(info.notes);
+    const bits = [];
+    if (info.filled) bits.push(`填充 ${info.filled} 行`);
+    if (info.dateFilled) bits.push('已更新日期');
+    if (!bits.length) bits.push('未填充字段');
+
+    const rawLines = String(res.raw || '')
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .slice(0, 40);
+    const lineHtml = rawLines
+      .map((ln, i) => {
+        const p = parseOcrLine(ln);
+        const tags = [];
+        if (p.date) tags.push(`<i class="tag-date">${esc(p.date.slice(5))}</i>`);
+        if (p.part) tags.push(`<i class="tag-part">${esc(p.part.no)}</i>`);
+        if (p.process) tags.push(`<i class="tag-proc">${esc(p.process)}</i>`);
+        if (p.qty > 0) tags.push(`<i class="tag-qty">${fmtQty(p.qty)}</i>`);
+        return `<button type="button" class="ocr-line" data-i="${i}">
+            <span class="ln-text">${esc(ln)}</span>
+            <span class="ln-tags">${tags.join('')}</span>
+          </button>`;
+      })
+      .join('');
+
+    box.innerHTML = `<div class="ocr-sum">
+        <span class="ocr-ok">${icon('check', 15)}识别完成</span>
+        <span>${esc((res.plugin && res.plugin.name) || res.engine || '识别插件')} · 置信度 ${conf}% · ${esc(bits.join(' · '))}</span>
+        <button type="button" class="ocr-close" id="ocrDismiss" aria-label="收起">${icon('x', 14)}</button>
+      </div>
+      ${warns.length ? `<ul class="ocr-warn">${warns.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}
+      ${
+        lineHtml
+          ? `<div class="ocr-raw">
+              <div class="ocr-raw-head">识别原文 <span>点一行，在下方自由选择零件和工序</span></div>
+              <div class="ocr-raw-list">${lineHtml}</div>
+              <div class="ocr-fill" id="ocrFill" hidden>
+                <div class="ocr-fill-top">
+                  <span class="ocr-fill-label" id="ocrFillText"></span>
+                  <button type="button" class="ocr-fill-x" id="ocrFillHide" aria-label="收起">${icon('x', 13)}</button>
+                </div>
+                <div class="ocr-fill-grid">
+                  <div class="mf-field"><span>日期</span><input class="input" type="date" id="mfDate"></div>
+                  <div class="mf-field"><span>数量</span><input class="input" type="number" id="mfQty" min="0" step="any" inputmode="decimal" placeholder="件数"></div>
+                  <div class="mf-field mf-part"><span>零件（可搜索整个零件库）</span><div id="mfPart">${comboHtml('')}</div></div>
+                  <div class="mf-field"><span>工序</span><select class="select" id="mfProc"></select></div>
+                </div>
+                <div class="ocr-fill-actions">
+                  <button type="button" class="btn btn-primary" id="mfApply">${icon('plus', 15)}填入报工单</button>
+                  <span class="hint">识别不出的字段可留空，零件直接搜索选择即可</span>
+                </div>
+              </div>
+            </div>`
+          : ''
+      }`;
+    box.hidden = false;
+    $('#ocrDismiss', box).addEventListener('click', () => (box.hidden = true));
+
+    const fillBar = $('#ocrFill', box);
+    if (!fillBar) return;
+
+    const cur = { parsed: null, part: null };
+    const partCombo = $('#mfPart .combo', fillBar);
+    const dateInput = $('#mfDate', fillBar);
+    const qtyInput = $('#mfQty', fillBar);
+    const procSel = $('#mfProc', fillBar);
+
+    function refreshProc(guess) {
+      const part = cur.part;
+      if (!part) {
+        procSel.innerHTML = '<option value="">先选择零件</option>';
+        procSel.disabled = true;
+        return;
+      }
+      procSel.disabled = false;
+      const ps = partProcesses(part);
+      procSel.innerHTML = ps.length
+        ? ps
+            .map((x) => `<option value="${esc(x.name)}">${esc(x.name)}${x.price ? ` · ${money(x.price)}` : ''}</option>`)
+            .join('')
+        : '<option value="">无工序</option>';
+      const hit = matchProcessName(part, guess || '');
+      if (hit) procSel.value = hit;
+    }
+
+    setupCombo(partCombo, (p) => {
+      cur.part = p;
+      if (p) refreshProc(cur.parsed && cur.parsed.process);
+      else refreshProc('');
+    });
+
+    $$('.ocr-line', box).forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const i = Number(btn.dataset.i);
+        const text = rawLines[i] || '';
+        const parsed = parseOcrLine(text);
+        cur.parsed = parsed;
+        cur.part = parsed.part;
+        $$('.ocr-line', box).forEach((b) => b.classList.toggle('on', b === btn));
+        $('#ocrFillText', fillBar).textContent = text;
+        dateInput.value = parsed.date || '';
+        qtyInput.value = parsed.qty > 0 ? parsed.qty : '';
+        $('.combo-input', partCombo).value = parsed.part ? partLabel(parsed.part) : '';
+        refreshProc(parsed.process);
+        fillBar.hidden = false;
+        fillBar.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      });
+    });
+
+    $('#ocrFillHide', fillBar).addEventListener('click', () => {
+      fillBar.hidden = true;
+      $$('.ocr-line', box).forEach((b) => b.classList.remove('on'));
+    });
+
+    $('#mfApply', fillBar).addEventListener('click', () => {
+      const date = dateInput.value;
+      const part = cur.part;
+      const qty = Number(qtyInput.value) || 0;
+      if (!date && !part) return toast('请先选择零件或填写日期', 'err');
+      const desc = [];
+      if (date) {
+        draft.date = date;
+        $('#rDate').value = date;
+        desc.push(`日期 ${date}`);
+      }
+      if (part) {
+        pushItemRow(part, procSel.value, qty);
+        desc.push(`${part.no}${procSel.value ? ' · ' + procSel.value : ''}${qty > 0 ? ' · ' + fmtQty(qty) : ''}`);
+      }
+      const onLine = $('.ocr-line.on', box);
+      if (onLine) onLine.classList.add('done');
+      toast('已填入：' + desc.join('，'), 'ok');
+    });
+  }
+
+  async function recognize(file) {
+    const btn = $('#ocrBtn');
+    const label = $('.ocr-txt b', btn);
+    const origin = label.textContent;
+    btn.disabled = true;
+    btn.classList.add('busy');
+    label.textContent = '识别中…';
+    try {
+      const image = await compressImage(file);
+      const res = await api('POST', `api.php?action=plugin.invoke&id=${encodeURIComponent(ocrPlugin.id)}`, { image });
+      const info = applyRecognized(res);
+      renderOcrResult(res, info);
+      toast(info.filled ? `识别完成，已填充 ${info.filled} 行` : '识别完成，请核对后手动补全', info.filled ? 'ok' : '');
+    } catch (err) {
+      if (err.status !== 401) toast(err.message, 'err');
+    } finally {
+      label.textContent = origin;
+      btn.disabled = false;
+      btn.classList.remove('busy');
+    }
+  }
+
+  if (ocrPlugin) {
+    const ocrInput = document.createElement('input');
+    ocrInput.type = 'file';
+    ocrInput.accept = 'image/*';
+    ocrInput.hidden = true;
+    $('#reportForm').appendChild(ocrInput);
+    $('#ocrBtn').addEventListener('click', () => ocrInput.click());
+    ocrInput.addEventListener('change', () => {
+      const file = ocrInput.files && ocrInput.files[0];
+      ocrInput.value = '';
+      if (file) recognize(file);
+    });
+  }
 
   $('#addRow').addEventListener('click', () => {
     draft.items.push(newItem());
@@ -1940,6 +2610,7 @@ function viewStats() {
     `<button class="btn btn-ghost" data-action="stats-export">${icon('download', 16)}导出 CSV</button>`
   );
 
+  statRange = resolveRange(statRange);
   const validOrderIds = new Set(state.orders.map((o) => o.id));
   statOrderIds.forEach((id) => {
     if (!validOrderIds.has(id)) statOrderIds.delete(id);
@@ -1968,21 +2639,21 @@ function viewStats() {
 
   $('#view').innerHTML = `
     <div class="toolbar stats-filter">
-      <label class="mini-field">开始<input class="input" id="stFrom" type="date" value="${esc(statFrom)}"></label>
-      <label class="mini-field">结束<input class="input" id="stTo" type="date" value="${esc(statTo)}"></label>
+      ${rangeFilterHtml('stRange', statRange)}
       ${multiSelectHtml('msOrder', '全部订单')}
       ${multiSelectHtml('msPart', '全部零件')}
       <div class="search">${icon('search', 16)}<input class="input" id="stSearch" placeholder="搜索单号 / 人员 / 零件 / 工序" value="${esc(statQuery)}" autocomplete="off"></div>
     </div>
     <div class="stats" id="stCards"></div>
-    <div class="table-card"><table class="mini-table stats-table" id="stTable"></table></div>`;
+    <div class="table-card"><table class="mini-table stats-table" id="stTable"></table></div>
+    <div id="stMore"></div>`;
 
   function collect() {
     const rows = [];
     const q = statQuery.trim().toLowerCase();
     for (const r of state.reports) {
-      if (statFrom && String(r.date) < statFrom) continue;
-      if (statTo && String(r.date) > statTo) continue;
+      if (statRange.from && String(r.date) < statRange.from) continue;
+      if (statRange.to && String(r.date) > statRange.to) continue;
       for (const it of r.items || []) {
         const oid = it.orderId || r.orderId;
         if (statOrderIds.size && !statOrderIds.has(oid)) continue;
@@ -2011,15 +2682,18 @@ function viewStats() {
       <div class="stat"><div class="stat-k">金额合计</div><div class="stat-v">${money(amount)}</div></div>`;
 
     const table = $('#stTable');
+    const moreBox = $('#stMore');
     if (!rows.length) {
       table.innerHTML = `<tbody><tr><td class="empty-cell">没有符合条件的报工记录</td></tr></tbody>`;
+      if (moreBox) moreBox.innerHTML = '';
       return;
     }
+    const shown = rows.slice(0, statLimit);
     table.innerHTML = `<thead><tr>
         <th>日期</th><th>报工单</th><th>订单</th><th class="num">订单数量</th><th>零件</th><th>工序</th>
         <th class="num">数量</th><th class="num">单价</th><th class="num">金额</th><th>报工人</th>
       </tr></thead>
-      <tbody>${rows
+      <tbody>${shown
         .map((x) => {
           const oid = x.item.orderId || x.report.orderId;
           const order = state.orders.find((o) => o.id === oid);
@@ -2038,25 +2712,46 @@ function viewStats() {
           </tr>`;
         })
         .join('')}</tbody>`;
+
+    if (moreBox) {
+      moreBox.innerHTML =
+        rows.length > shown.length
+          ? `<div class="load-more"><button class="btn btn-ghost" id="loadMoreStats">加载更多（还有 ${rows.length - shown.length} 条）</button></div>`
+          : '';
+      const more = $('#loadMoreStats');
+      if (more) {
+        more.addEventListener('click', () => {
+          statLimit += 100;
+          render();
+        });
+      }
+    }
   }
 
   render();
 
-  setupMultiSelect($('#msOrder'), orderOpts, statOrderIds, render, '全部订单');
-  setupMultiSelect($('#msPart'), partOpts, statPartIds, render, '全部零件');
+  setupMultiSelect($('#msOrder'), orderOpts, statOrderIds, () => {
+    statLimit = 100;
+    render();
+  }, '全部订单');
+  setupMultiSelect($('#msPart'), partOpts, statPartIds, () => {
+    statLimit = 100;
+    render();
+  }, '全部零件');
 
-  $('#stFrom').addEventListener('change', (e) => {
-    statFrom = e.target.value;
+  setupRangeFilter($('#stRange'), statRange, (r) => {
+    statRange = r;
+    statLimit = 100;
     render();
   });
-  $('#stTo').addEventListener('change', (e) => {
-    statTo = e.target.value;
-    render();
-  });
-  $('#stSearch').addEventListener('input', (e) => {
-    statQuery = e.target.value;
-    render();
-  });
+  $('#stSearch').addEventListener(
+    'input',
+    debounce((e) => {
+      statQuery = e.target.value;
+      statLimit = 100;
+      render();
+    })
+  );
 
   window.__statsCollect = collect;
 }
@@ -2158,7 +2853,7 @@ function exportStats() {
       x.item.amount,
     ]);
   }
-  downloadText(`报工统计_${statFrom || '全部'}_${statTo || '全部'}.csv`, csvText(out));
+  downloadText(`报工统计_${statRange.from || '全部'}_${statRange.to || '全部'}.csv`, csvText(out));
 }
 
 /* ==================================================================== 操作 */
@@ -2232,7 +2927,8 @@ async function deleteOrder(id) {
 
 function exportCsv() {
   const p = new URLSearchParams();
-  if (reportMonth) p.set('month', reportMonth);
+  if (reportRange.from) p.set('from', reportRange.from);
+  if (reportRange.to) p.set('to', reportRange.to);
   if (reportQuery.trim()) p.set('q', reportQuery.trim());
   const a = document.createElement('a');
   a.href = 'api.php?action=export.csv' + (p.toString() ? '&' + p.toString() : '');
@@ -2242,43 +2938,176 @@ function exportCsv() {
   a.remove();
 }
 
+const SNAP_REASON = { manual: '手动', auto: '自动', 'pre-restore': '恢复前' };
+
+function snapTime(s) {
+  const v = String(s || '');
+  return v.length >= 16 ? v.slice(0, 16) : v;
+}
+
+function snapItemHtml(s) {
+  const reason = SNAP_REASON[s.reason] || '手动';
+  const bits = [`零件 ${fmtQty(s.parts || 0)}`, `订单 ${fmtQty(s.orders || 0)}`, `报工单 ${fmtQty(s.reports || 0)}`];
+  return `<div class="snap-item" data-file="${esc(s.file)}">
+      <div class="snap-main">
+        <div class="snap-title">
+          <b>${esc(snapTime(s.createdAt))}</b>
+          <span class="snap-badge ${s.reason === 'auto' ? 'auto' : s.reason === 'pre-restore' ? 'pre' : ''}">${esc(reason)}</span>
+          <span class="snap-size">${fmtBytes(s.bytes)}</span>
+        </div>
+        <div class="snap-sub">${esc(bits.join(' · '))}${s.note ? ' · ' + esc(s.note) : ''}</div>
+      </div>
+      <div class="snap-ops">
+        <button type="button" data-op="restore">恢复</button>
+        <a href="api.php?action=backup.download&id=${encodeURIComponent(s.file)}">下载</a>
+        <button type="button" data-op="delete" class="danger">删除</button>
+      </div>
+    </div>`;
+}
+
+async function loadSnapshots(box) {
+  const list = $('#snapList', box);
+  const meta = $('#snapMeta', box);
+  try {
+    const data = await api('GET', 'api.php?action=backup.list');
+    const items = data.snapshots || [];
+    meta.textContent = `${fmtQty(items.length)} 份 · ${fmtBytes(data.totalBytes || 0)} · 自动快照保留 ${fmtQty(
+      data.autoKeep || 20
+    )} 份`;
+    list.innerHTML = items.length
+      ? items.map(snapItemHtml).join('')
+      : `<div class="snap-empty">还没有快照，点上方按钮创建第一份。</div>`;
+  } catch (err) {
+    meta.textContent = '';
+    list.innerHTML = `<div class="snap-empty">读取快照失败：${esc(err.message || '请检查服务器')}</div>`;
+  }
+}
+
 function openBackup() {
   const { root, close } = openModal(`
     <h3>数据备份</h3>
-    <p>数据保存在服务器的 data 文件夹里。直接复制整个 data 文件夹，就是一份完整备份。</p>
-    <ul class="modal-list">
-      <li><a href="api.php?action=export.json">${icon('download', 16)}导出全部数据（JSON，可回导）</a></li>
-      <li><a href="api.php?action=export.csv">${icon('file', 16)}导出报工明细（CSV，Excel 可打开）</a></li>
-      <li><button type="button" id="restoreBtn">${icon('upload', 16)}从 JSON 备份恢复…</button></li>
-    </ul>
-    <input type="file" id="restoreFile" accept="application/json,.json" hidden>
+    <p>快照会整份保存当前数据库，可随时恢复到当时的状态；每次恢复前还会自动再存一份。</p>
+    <div class="snap-create">
+      <input class="input" id="snapNote" maxlength="100" placeholder="快照备注（可选，如：月末结账）">
+      <button type="button" class="btn btn-primary" id="snapCreate">${icon('plus', 15)}创建快照</button>
+    </div>
+    <div class="snap-head"><span>已有快照</span><span id="snapMeta">加载中…</span></div>
+    <div class="snap-list" id="snapList"><div class="snap-empty">正在读取…</div></div>
+    <details class="snap-more">
+      <summary>导出 / 导入文件</summary>
+      <ul class="modal-list">
+        <li><a href="api.php?action=export.json">${icon('download', 16)}导出全部数据（JSON，可回导）</a></li>
+        <li><a href="api.php?action=export.csv">${icon('file', 16)}导出报工明细（CSV，Excel 可打开）</a></li>
+        <li><button type="button" id="restoreBtn">${icon('upload', 16)}从 JSON 备份恢复…</button></li>
+      </ul>
+      <input type="file" id="restoreFile" accept="application/json,.json" hidden>
+    </details>
+    <p class="hint">快照包含零件、订单、报工等全部数据；图片在 data/images/{parts,attachments} 里（零件图按零件名、附件按上传日期+序号命名），迁移服务器时请连同 data 文件夹一起复制。</p>
     <div class="modal-actions"><button class="btn btn-ghost" data-cancel>关闭</button></div>
   `);
 
   root.querySelector('[data-cancel]').addEventListener('click', close);
+  loadSnapshots(root);
+
+  const noteInput = root.querySelector('#snapNote');
+  const createBtn = root.querySelector('#snapCreate');
+  createBtn.addEventListener('click', async () => {
+    createBtn.disabled = true;
+    try {
+      await api('POST', 'api.php?action=backup.create', { note: noteInput.value.trim() });
+      noteInput.value = '';
+      toast('快照已创建', 'ok');
+      await loadSnapshots(root);
+    } catch (err) {
+      if (err.status !== 401) toast(err.message || '创建快照失败', 'err');
+    } finally {
+      createBtn.disabled = false;
+    }
+  });
+
+  root.querySelector('#snapList').addEventListener('click', async (e) => {
+    const item = e.target.closest('.snap-item');
+    if (!item) return;
+    const file = item.dataset.file;
+    const op = e.target.closest('[data-op]');
+    if (!op) return;
+    if (op.dataset.op === 'restore') {
+      const ok = await confirmDialog({
+        title: '恢复到这份快照？',
+        message: `将用 ${snapTime(item.querySelector('.snap-title b').textContent)} 的快照覆盖当前数据，恢复前会自动保存当前状态。`,
+        okText: '恢复',
+        danger: true,
+      });
+      if (!ok) {
+        openBackup();
+        return;
+      }
+      try {
+        await api('POST', 'api.php?action=backup.restore', { id: file });
+        toast('已恢复到所选快照', 'ok');
+        await refreshState();
+        route();
+        openBackup();
+      } catch (err) {
+        openBackup();
+        if (err.status !== 401) toast(err.message || '恢复失败', 'err');
+      }
+    } else if (op.dataset.op === 'delete') {
+      const ok = await confirmDialog({
+        title: '删除这份快照？',
+        message: '删除后无法找回，当前数据不受影响。',
+        okText: '删除',
+        danger: true,
+      });
+      if (!ok) {
+        openBackup();
+        return;
+      }
+      try {
+        await api('POST', 'api.php?action=backup.delete', { id: file });
+        toast('快照已删除', 'ok');
+        openBackup();
+      } catch (err) {
+        openBackup();
+        if (err.status !== 401) toast(err.message || '删除失败', 'err');
+      }
+    }
+  });
+
   const fileInput = root.querySelector('#restoreFile');
   root.querySelector('#restoreBtn').addEventListener('click', () => fileInput.click());
   fileInput.addEventListener('change', async () => {
     const file = fileInput.files && fileInput.files[0];
     if (!file) return;
+    let data;
     try {
       const text = await file.text();
-      const data = JSON.parse(text);
+      data = JSON.parse(text);
       if (!data || !Array.isArray(data.parts) || !Array.isArray(data.reports)) throw new Error('文件不是有效的备份');
-      const ok = await confirmDialog({
-        title: '确认恢复备份？',
-        message: `将用备份中的 ${data.parts.length} 个零件、${data.reports.length} 张报工单覆盖当前全部数据，当前数据会先自动备份。`,
-        okText: '覆盖恢复',
-        danger: true,
-      });
-      if (!ok) return;
+    } catch (err) {
+      fileInput.value = '';
+      if (err.status !== 401) toast(err.message || '备份文件读取失败', 'err');
+      return;
+    }
+    const ok = await confirmDialog({
+      title: '确认恢复备份？',
+      message: `将用备份中的 ${data.parts.length} 个零件、${data.reports.length} 张报工单覆盖当前全部数据，当前数据会先自动备份。`,
+      okText: '覆盖恢复',
+      danger: true,
+    });
+    if (!ok) {
+      openBackup();
+      return;
+    }
+    try {
       await api('POST', 'api.php?action=restore', { data });
       toast('备份已恢复', 'ok');
       await refreshState();
-      close();
       route();
+      openBackup();
     } catch (err) {
-      if (err.status !== 401) toast(err.message || '备份文件读取失败', 'err');
+      openBackup();
+      if (err.status !== 401) toast(err.message || '备份恢复失败', 'err');
     } finally {
       fileInput.value = '';
     }
@@ -2293,6 +3122,227 @@ async function logout() {
   state.reports = [];
   state.orders = [];
   showLogin();
+}
+
+/* ==================================================================== 识别插件设置 */
+
+/* 1x1 透明 PNG，用于设置页的“测试识别” */
+const OCR_TEST_IMAGE =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+
+function pluginFieldHtml(f) {
+  const val = f.value === undefined || f.value === null ? '' : String(f.value);
+  if (f.type === 'checkbox') {
+    return `<label class="plugin-check"><input type="checkbox" data-field="${esc(f.key)}" ${
+      val && val !== '0' ? 'checked' : ''
+    }><span>${esc(f.label)}</span></label>`;
+  }
+  let ctrl;
+  if (f.type === 'select') {
+    ctrl = `<select class="select" data-field="${esc(f.key)}">${(f.options || [])
+      .map((o) => `<option value="${esc(o.value)}" ${String(o.value) === val ? 'selected' : ''}>${esc(o.label)}</option>`)
+      .join('')}</select>`;
+  } else if (f.type === 'textarea') {
+    ctrl = `<textarea class="input plugin-textarea" rows="${Number(f.rows) || 4}" data-field="${esc(f.key)}" placeholder="${esc(
+      f.placeholder || ''
+    )}" spellcheck="false">${esc(val)}</textarea>`;
+  } else {
+    const type = f.type === 'number' ? 'number' : f.type === 'password' ? 'password' : 'text';
+    const step = f.type === 'number' ? ' step="any"' : '';
+    ctrl = `<input class="input" type="${type}"${step} data-field="${esc(f.key)}" value="${esc(val)}" placeholder="${esc(
+      f.placeholder || ''
+    )}" autocomplete="off" spellcheck="false">`;
+  }
+  return `<div class="field plugin-field"><label>${esc(f.label)}</label>${ctrl}${
+    f.hint ? `<div class="hint">${esc(f.hint)}</div>` : ''
+  }</div>`;
+}
+
+function pluginCardHtml(p) {
+  return `<div class="plugin-card" data-plugin="${esc(p.id)}">
+    <div class="plugin-head">
+      <div class="plugin-title">
+        <div class="plugin-name">${esc(p.name)}<span class="plugin-ver">v${esc(p.version)}</span></div>
+        <p class="plugin-desc">${esc(p.description || '未提供说明')}</p>
+      </div>
+      <label class="switch" title="${p.enabled ? '点击停用' : '点击启用'}">
+        <input type="checkbox" data-plugin-enabled ${p.enabled ? 'checked' : ''}>
+        <span class="switch-track"></span>
+      </label>
+    </div>
+    <div class="plugin-tags">
+      ${(p.capabilities || []).map((c) => `<span class="chip">${esc(c)}</span>`).join('')}
+      <span class="plugin-author">${esc(p.author || '未署名')}</span>
+      <span class="plugin-state ${p.enabled ? 'on' : ''}">${p.enabled ? '已启用' : '已停用'}</span>
+    </div>
+    <div class="plugin-fields">${(p.settings || []).map(pluginFieldHtml).join('')}</div>
+    <div class="plugin-check-box" hidden></div>
+    <div class="plugin-actions">
+      ${p.hasCheck ? `<button type="button" class="btn btn-ghost" data-plugin-check="${esc(p.id)}">API 链接测试</button>` : ''}
+      <button type="button" class="btn btn-ghost" data-plugin-test="${esc(p.id)}">测试识别</button>
+      <button type="button" class="btn btn-primary" data-plugin-save="${esc(p.id)}">保存设置</button>
+    </div>
+  </div>`;
+}
+
+function netCardHtml() {
+  return `<div class="plugin-card net-card">
+    <div class="plugin-head">
+      <div class="plugin-title">
+        <div class="plugin-name">互联网连接测试<span class="plugin-ver">服务器出网</span></div>
+        <p class="plugin-desc">由服务器发起请求，检测能否访问百度首页与百度云 OCR 接口（含 HTTPS 证书校验）。</p>
+      </div>
+    </div>
+    <div class="plugin-actions">
+      <button type="button" class="btn btn-ghost" data-net-test>开始测试</button>
+      <span class="net-sum" id="netSum"></span>
+    </div>
+    <div class="net-result" id="netResult" hidden></div>
+  </div>`;
+}
+
+function netResultHtml(res) {
+  const rows = (res.results || [])
+    .map(
+      (r) => `<div class="check-row ${r.ok ? 'ok' : 'bad'}">
+        <i class="check-dot"></i>
+        <b>${esc(r.name)}</b>
+        <span>${esc(r.detail)} · ${Number(r.ms) || 0} ms</span>
+        <em>${esc(r.url)}</em>
+      </div>`
+    )
+    .join('');
+  return `${rows}<div class="check-note">curl 扩展：${res.curl ? '已启用' : '未启用'} · 测试时间 ${esc(res.time || '')}</div>`;
+}
+
+function viewSettings() {
+  setHead(
+    '识别插件',
+    '拍照识别以插件形式接入，可在这里启用、配置与测试',
+    `<a class="btn btn-ghost" href="#/reports/new">${icon('back', 16)}返回新增报工</a>`
+  );
+
+  const view = $('#view');
+  const emptyHint = `<div class="plugin-card">
+      <div class="plugin-head"><div class="plugin-title">
+        <div class="plugin-name">还没有识别插件</div>
+        <p class="plugin-desc">把插件目录放到服务器的 public/plugins/&lt;id&gt;/，包含 plugin.json 与 handler.php（可选 check.php），刷新本页即可识别到。</p>
+      </div></div>
+      <div class="plugin-actions"><button type="button" class="btn btn-ghost" data-action="reload-plugins">重新扫描插件</button></div>
+    </div>`;
+
+  view.innerHTML = `<div class="settings-list" id="settingsList">
+      ${netCardHtml()}
+      ${state.plugins.map(pluginCardHtml).join('') || emptyHint}
+    </div>
+    <p class="settings-note">插件目录 <code>public/plugins/&lt;id&gt;/</code> · 配置保存在 <code>data/plugins.json</code>。识别出的日期、零件、工序、数量会自动填入报工单，保存前请人工核对。</p>`;
+
+  $('#settingsList').addEventListener('click', async (e) => {
+    const netBtn = e.target.closest('[data-net-test]');
+    if (netBtn) {
+      const old = netBtn.textContent;
+      const box = $('#netResult');
+      netBtn.disabled = true;
+      netBtn.textContent = '测试中…';
+      try {
+        const res = await api('GET', 'api.php?action=net.check');
+        box.innerHTML = netResultHtml(res);
+        box.hidden = false;
+        const sum = $('#netSum');
+        sum.textContent = res.ok ? '全部通过' : '存在失败项';
+        sum.className = 'net-sum ' + (res.ok ? 'ok' : 'bad');
+        toast(res.ok ? '互联网连接正常' : '部分地址无法访问，请查看结果', res.ok ? 'ok' : 'err');
+      } catch (err) {
+        if (err.status !== 401) toast(err.message, 'err');
+      } finally {
+        netBtn.disabled = false;
+        netBtn.textContent = old;
+      }
+      return;
+    }
+
+    const checkBtn = e.target.closest('[data-plugin-check]');
+    if (checkBtn) {
+      const id = checkBtn.dataset.pluginCheck;
+      const card = checkBtn.closest('.plugin-card');
+      const box = card ? $('.plugin-check-box', card) : null;
+      const old = checkBtn.textContent;
+      checkBtn.disabled = true;
+      checkBtn.textContent = '测试中…';
+      if (box) box.hidden = true;
+      try {
+        const res = await api('POST', `api.php?action=plugin.check&id=${encodeURIComponent(id)}`, {});
+        if (box) {
+          const rows = (res.details || [])
+            .map(
+              (d) => `<div class="check-row ${d.ok ? 'ok' : 'bad'}">
+                <i class="check-dot"></i>
+                <b>${esc(d.label)}</b>
+                <span>${esc(d.detail || '')}</span>
+              </div>`
+            )
+            .join('');
+          box.innerHTML = `<div class="check-head ${res.ok ? 'ok' : 'bad'}">${esc(
+            res.message || (res.ok ? '接口连接正常' : '接口测试未通过')
+          )}</div>${rows}`;
+          box.hidden = false;
+        }
+        toast(res.ok ? 'API 链接测试通过' : res.message || 'API 链接测试未通过', res.ok ? 'ok' : 'err');
+      } catch (err) {
+        if (err.status !== 401) toast(err.message, 'err');
+      } finally {
+        checkBtn.disabled = false;
+        checkBtn.textContent = old;
+      }
+      return;
+    }
+
+    const testBtn = e.target.closest('[data-plugin-test]');
+    if (testBtn) {
+      const id = testBtn.dataset.pluginTest;
+      const old = testBtn.textContent;
+      testBtn.disabled = true;
+      testBtn.textContent = '测试中…';
+      try {
+        const res = await api('POST', `api.php?action=plugin.invoke&id=${encodeURIComponent(id)}`, { image: OCR_TEST_IMAGE });
+        const n = res.fields && Array.isArray(res.fields.items) ? res.fields.items.length : 0;
+        toast(`测试成功：识别到 ${n} 行明细，置信度 ${Math.round((Number(res.confidence) || 0) * 100)}%`, 'ok');
+      } catch (err) {
+        if (err.status !== 401) toast(err.message, 'err');
+      } finally {
+        testBtn.disabled = false;
+        testBtn.textContent = old;
+      }
+      return;
+    }
+
+    const saveBtn = e.target.closest('[data-plugin-save]');
+    if (!saveBtn) return;
+    const id = saveBtn.dataset.pluginSave;
+    const card = view.querySelector(`.plugin-card[data-plugin="${id}"]`);
+    if (!card) return;
+    const settings = {};
+    $$('[data-field]', card).forEach((el) => {
+      settings[el.dataset.field] = el.type === 'checkbox' ? el.checked : el.value;
+    });
+    const toggle = $('[data-plugin-enabled]', card);
+    saveBtn.disabled = true;
+    saveBtn.textContent = '保存中…';
+    try {
+      const res = await api('POST', `api.php?action=plugin.save&id=${encodeURIComponent(id)}`, {
+        enabled: !!(toggle && toggle.checked),
+        settings,
+      });
+      const idx = state.plugins.findIndex((p) => p.id === id);
+      if (idx >= 0 && res.plugin) state.plugins[idx] = res.plugin;
+      toast('插件设置已保存', 'ok');
+      viewSettings();
+    } catch (err) {
+      if (err.status !== 401) toast(err.message, 'err');
+      saveBtn.disabled = false;
+      saveBtn.textContent = '保存设置';
+    }
+  });
 }
 
 /* ==================================================================== 登录 / 启动 */
@@ -2322,6 +3372,7 @@ function showFatal(err) {
 async function boot() {
   try {
     await refreshState();
+    await refreshPlugins();
     hideLogin();
     renderShell();
     if (!location.hash) history.replaceState(null, '', '#/parts');
@@ -2356,6 +3407,16 @@ document.addEventListener('click', async (e) => {
     if (action === 'parts-import') return openPartsImport();
     if (action === 'export-csv') return exportCsv();
     if (action === 'stats-export') return exportStats();
+    if (action === 'reload-plugins') {
+      try {
+        await refreshPlugins();
+      } catch (err) {
+        if (err.status !== 401) toast(err.message, 'err');
+        return;
+      }
+      if (location.hash === '#/settings') viewSettings();
+      return;
+    }
   }
 
   const actEl = e.target.closest('[data-act]');
