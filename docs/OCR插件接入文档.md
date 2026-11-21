@@ -73,9 +73,10 @@ public/plugins/my-ocr/
 | `version` | 否 | 展示用，≤20 字，建议语义化版本 |
 | `description` | 否 | ≤200 字 |
 | `author` | 否 | ≤40 字 |
-| `capabilities` | 否 | 能力标签数组，报工识别用 `report.ocr` |
+| `capabilities` | 否 | 能力标签数组，报工识别用 `report.ocr`；融合类插件再声明 `report.ocr.fusion`，前端会优先把它作为默认识别引擎 |
 | `entry` | 否 | 执行脚本文件名，默认 `handler.php`；必须存在且以 `.php` 结尾 |
 | `check` | 否 | 自检脚本文件名，可选；不存在则设置页不显示「API 链接测试」 |
+| `defaultEnabled` | 否 | 缺省 `true`；设为 `false` 时首次安装默认停用，适合融合、收费或需先配置密钥的插件 |
 | `settings` | 否 | 配置项数组，见下文 |
 
 ### 3.2 settings 配置项
@@ -84,18 +85,21 @@ public/plugins/my-ocr/
 | --- | --- |
 | `key` | 必填，字母开头，字母/数字/下划线，≤32 位，同一插件内唯一 |
 | `label` | 设置页显示名称，≤40 字 |
-| `type` | `text`（默认）/ `password` / `number` / `select` / `checkbox` / `textarea` |
+| `type` | `text`（默认）/ `password` / `number` / `select` / `checkbox` / `textarea` / `multiselect` |
 | `placeholder` | 输入框占位文字，≤120 字 |
 | `hint` | 输入框下方说明，≤120 字 |
-| `default` | 默认值（字符串；checkbox 用 `"1"` 表示默认勾选） |
+| `default` | 默认值（字符串；checkbox 用 `"1"` 表示默认勾选；multiselect 用逗号分隔的值） |
 | `rows` | 仅 textarea，2–12，默认 4 |
-| `options` | 仅 select，`[{"value":"...","label":"..."}]`，value 必填 |
+| `options` | 仅 select / multiselect，`[{"value":"...","label":"..."}]`，value 必填 |
+| `source` | 仅 multiselect；填 `ocrEngines` 时由后端自动生成「其它已安装识别插件」选项，无需手写 options |
+| `min` / `max` / `step` | 仅 number，设置页会渲染为输入框约束，后端保存时按范围校验 |
 
 保存规则（由后端统一处理，插件无需关心）：
 
 - `password`：前端回显 `********`；提交该占位值时**不覆盖**原值，只有改动了才写入。
 - `checkbox`：保存为 `"1"` 或 `""`。
-- `number`：空串原样保存，否则规范为数字字符串。
+- `number`：空串原样保存，否则规范为数字字符串；声明了 min / max 时越界会拒绝保存。
+- `multiselect`：前端提交数组，后端只保留清单允许的选项并用逗号拼成字符串；`source: ocrEngines` 只允许其它声明了 `report.ocr` 的插件。
 - 其它：`text`/`select` ≤500 字，`textarea` ≤2000 字。
 - 只保存清单里声明过的 key，未知 key 会被忽略。
 
@@ -180,6 +184,12 @@ function bg_plugin_run(array $ctx) {
 - 用 `bg_fail(400, '...')` 可以返回自定义状态码与消息（api.php 提供的全局函数）。
 - 详细错误信息会写入 PHP error_log，前缀 `[baogong] 插件 <id> 执行失败：`。
 - 不要在插件里 `exit` 或输出内容，否则会被判定为「没有返回结果」。
+
+### 4.6 融合插件调用其它引擎
+
+融合插件在自己的 `handler.php` 里用 `bg_plugin_invoke_engine($id, $ctx)` 调用其它识别插件，返回与普通调用相同的归一化结构。与 `bg_plugin_invoke()` 不同，单路失败只抛出 `RuntimeException`，不会中断整个请求，调用方可以捕获后记一条告警继续融合；被调用的插件必须已安装且已启用。
+
+`plugins/ocr-ensemble/` 是参考实现：按 `engines` 设置逐路调用，字段相似度聚类投票、数量取置信度加权中位数，再按一致性系数计算综合置信度。
 
 ---
 

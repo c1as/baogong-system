@@ -373,6 +373,38 @@ function ocrPlugins() {
   return state.plugins.filter((p) => p.enabled && (p.capabilities || []).includes('report.ocr'));
 }
 
+/* 融合引擎能力标记：优先作为默认识别引擎 */
+function isFusionPlugin(p) {
+  return !!(p && (p.capabilities || []).includes('report.ocr.fusion'));
+}
+
+const OCR_ENGINE_STORAGE = 'bg.defaultOcrEngine';
+
+function storedOcrEngine() {
+  try {
+    return localStorage.getItem(OCR_ENGINE_STORAGE) || '';
+  } catch {
+    return '';
+  }
+}
+
+function setStoredOcrEngine(id) {
+  try {
+    if (id) localStorage.setItem(OCR_ENGINE_STORAGE, id);
+    else localStorage.removeItem(OCR_ENGINE_STORAGE);
+  } catch {}
+}
+
+/* 当前使用的识别引擎：手动选择 > 融合引擎 > 第一个已启用引擎 */
+function activeOcrPlugin() {
+  const list = ocrPlugins();
+  if (!list.length) return null;
+  const saved = storedOcrEngine();
+  const hit = saved ? list.find((p) => p.id === saved) : null;
+  if (hit) return hit;
+  return list.find(isFusionPlugin) || list[0];
+}
+
 /* ==================================================================== 外壳 */
 
 function navItem(key, hash, ic, label) {
@@ -409,7 +441,7 @@ function renderShell() {
         <button class="side-btn" data-action="backup">${icon('database', 16)}数据备份</button>
         <a class="side-btn" href="#/settings">${icon('settings', 16)}识别插件设置</a>
         ${state.auth ? `<button class="side-btn" data-action="logout">${icon('logout', 16)}退出登录</button>` : ''}
-        <div class="side-ver">v2.3 · 数据保存在服务器</div>
+        <div class="side-ver">v2.5 · 数据保存在服务器</div>
       </div>
     </aside>
 
@@ -773,7 +805,7 @@ function viewParts() {
     view.innerHTML = emptyState(
       'box',
       '还没有零件',
-      '先添加零件：图号必填，名称、材料、库存、工序单价都可以后补。之后报工只要选零件、填数量，金额自动算好。',
+      '先添加零件：图号必填，名称、材料、工序单价都可以后补。之后报工只要选零件、填数量，金额自动算好。',
       '新增第一个零件',
       'new-part'
     );
@@ -872,10 +904,6 @@ function renderPartRows() {
           ${meta ? `<div class="part-meta">${meta}</div>` : ''}
           <div class="proc-chips proc-chips-with-desc">${chips}</div>
         </div>
-        <div class="part-stock">
-          <span>库存</span>
-          <input class="stock-input" type="number" min="0" step="any" inputmode="decimal" value="${esc(p.stock || 0)}" data-stock="${p.id}" aria-label="库存数量">
-        </div>
         <div class="part-actions">
           <div class="pa-btns">
             <button class="icon-btn" data-act="part-report" data-id="${p.id}" title="用这个零件报工">${icon('plusCircle', 18)}</button>
@@ -900,35 +928,6 @@ function renderPartRows() {
     });
   }
 
-  $$('.stock-input', box).forEach((input) => {
-    input.addEventListener('change', () => saveStock(input));
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') input.blur();
-    });
-  });
-}
-
-async function saveStock(input) {
-  const id = input.dataset.stock;
-  const part = partStore.items.find((p) => p.id === id);
-  const value = Number(input.value);
-  if (!Number.isFinite(value) || value < 0) {
-    toast('库存数量必须是不小于 0 的数字', 'err');
-    if (part) input.value = part.stock || 0;
-    return;
-  }
-  try {
-    const res = await api('POST', 'api.php?action=part.stock&id=' + encodeURIComponent(id), { stock: value });
-    if (part) {
-      part.stock = res.part.stock;
-      cachePart(part);
-    }
-    input.value = res.part.stock;
-    toast('库存已更新', 'ok');
-  } catch (err) {
-    if (err.status !== 401) toast(err.message, 'err');
-    if (part) input.value = part.stock || 0;
-  }
 }
 
 /* ==================================================================== 零件表单 */
@@ -986,10 +985,6 @@ async function viewPartForm(id) {
           <div class="field">
             <label>材料</label>
             <input class="input" id="fMaterial" value="${esc(part && part.material ? part.material : '')}" placeholder="选填，如 6063T6" autocomplete="off">
-          </div>
-          <div class="field">
-            <label>库存数量</label>
-            <input class="input num" id="fStock" type="number" min="0" step="any" inputmode="decimal" value="${esc(part ? part.stock || 0 : 0)}">
           </div>
           <div class="field span2">
             <label>备注</label>
@@ -1193,7 +1188,6 @@ async function viewPartForm(id) {
       no,
       name: $('#fName').value.trim(),
       material: $('#fMaterial').value.trim(),
-      stock: Number($('#fStock').value || 0),
       note: $('#fNote').value.trim(),
       processes: processes
         .filter((x) => String(x.name).trim() !== '')
@@ -1223,7 +1217,7 @@ async function viewPartForm(id) {
 
 /* -------------------------------------------------------------------- 零件导入导出 */
 
-const PART_HEADERS = ['零件图号', '零件名称', '材料', '库存数量', '备注'];
+const PART_HEADERS = ['零件图号', '零件名称', '材料', '备注'];
 function partHeaderRow() {
   const head = PART_HEADERS.slice();
   for (let i = 1; i <= 9; i += 1) head.push(`工序${i}`, `工序说明${i}`, `单价${i}`);
@@ -1244,7 +1238,7 @@ function exportParts() {
 
 function downloadPartsTemplate() {
   const rows = [partHeaderRow()];
-  const sample = ['示例-001', '示例零件', '6063T6', 10, '这一行可以删除'];
+  const sample = ['示例-001', '示例零件', '6063T6', '这一行可以删除'];
   for (let i = 1; i <= 9; i += 1) {
     sample.push(i === 1 ? '铣加工' : i === 2 ? '钻孔' : '');
     sample.push(i === 1 ? '先铣外形，留 0.2mm 余量' : i === 2 ? '按图纸孔位钻孔' : '');
@@ -1309,7 +1303,6 @@ function openPartsImport() {
           no,
           name: cell(row, '零件名称'),
           material: cell(row, '材料'),
-          stock: Number(cell(row, '库存数量') || 0),
           note: cell(row, '备注'),
           processes,
         });
@@ -1868,7 +1861,19 @@ function orderCellHtml(it) {
 }
 
 function ocrBarHtml() {
-  const plugin = ocrPlugins()[0] || null;
+  const list = ocrPlugins();
+  const plugin = activeOcrPlugin();
+  const engineCtl =
+    list.length > 1
+      ? `<select class="select ocr-engine" id="ocrEngineSel" title="切换识别引擎">${list
+          .map(
+            (p) =>
+              `<option value="${esc(p.id)}" ${plugin && p.id === plugin.id ? 'selected' : ''}>${esc(p.name)}${
+                isFusionPlugin(p) ? ' · 融合' : ''
+              }</option>`
+          )
+          .join('')}</select>`
+      : `<span>${plugin ? esc(plugin.name) : '——'}</span>`;
   return `<div class="ocr-bar">
       <button type="button" class="ocr-main" id="ocrBtn" ${plugin ? '' : 'disabled'}>
         <span class="ocr-ic">${icon('camera', 22)}</span>
@@ -1878,7 +1883,7 @@ function ocrBarHtml() {
         </span>
       </button>
       <div class="ocr-meta">
-        <span>${plugin ? esc(plugin.name) : '——'}</span>
+        ${engineCtl}
         <a class="ocr-link" href="#/settings">识别设置</a>
       </div>
     </div>
@@ -2179,7 +2184,7 @@ async function viewReportForm(id, presetPartId) {
 
   /* ---------------- 拍照识别（插件） ---------------- */
 
-  const ocrPlugin = ocrPlugins()[0] || null;
+  const ocrPlugin = ocrPlugins().length ? activeOcrPlugin() : null;
 
   function normKey(v) {
     return String(v === undefined || v === null ? '' : v)
@@ -2557,6 +2562,8 @@ async function viewReportForm(id, presetPartId) {
   }
 
   async function recognize(file) {
+    const engine = activeOcrPlugin();
+    if (!engine) return toast('没有可用的识别引擎，请先在识别设置中启用', 'err');
     const btn = $('#ocrBtn');
     const label = $('.ocr-txt b', btn);
     const origin = label.textContent;
@@ -2572,7 +2579,7 @@ async function viewReportForm(id, presetPartId) {
       } else {
         toast('图片附件已达 6 张，本次识别图片未保存', 'err');
       }
-      const res = await api('POST', `api.php?action=plugin.invoke&id=${encodeURIComponent(ocrPlugin.id)}`, { image });
+      const res = await api('POST', `api.php?action=plugin.invoke&id=${encodeURIComponent(engine.id)}`, { image });
       const info = await applyRecognized(res);
       renderOcrResult(res, info);
       toast(info.filled ? `识别完成，已填充 ${info.filled} 行` : '识别完成，请核对后手动补全', info.filled ? 'ok' : '');
@@ -2583,6 +2590,15 @@ async function viewReportForm(id, presetPartId) {
       btn.disabled = false;
       btn.classList.remove('busy');
     }
+  }
+
+  const engineSel = $('#ocrEngineSel');
+  if (engineSel) {
+    engineSel.addEventListener('change', () => {
+      setStoredOcrEngine(engineSel.value);
+      const p = state.plugins.find((x) => x.id === engineSel.value);
+      toast('识别引擎已切换为 ' + (p ? p.name : engineSel.value), 'ok');
+    });
   }
 
   if (ocrPlugin) {
@@ -3315,7 +3331,7 @@ function exportCsv() {
   a.remove();
 }
 
-const SNAP_REASON = { manual: '手动', auto: '自动', 'pre-restore': '恢复前' };
+const SNAP_REASON = { manual: '手动', auto: '自动', 'pre-restore': '恢复前', 'pre-clear': '清除前' };
 
 function snapTime(s) {
   const v = String(s || '');
@@ -3329,7 +3345,7 @@ function snapItemHtml(s) {
       <div class="snap-main">
         <div class="snap-title">
           <b>${esc(snapTime(s.createdAt))}</b>
-          <span class="snap-badge ${s.reason === 'auto' ? 'auto' : s.reason === 'pre-restore' ? 'pre' : ''}">${esc(reason)}</span>
+          <span class="snap-badge ${s.reason === 'auto' ? 'auto' : String(s.reason || '').indexOf('pre-') === 0 ? 'pre' : ''}">${esc(reason)}</span>
           <span class="snap-size">${fmtBytes(s.bytes)}</span>
         </div>
         <div class="snap-sub">${esc(bits.join(' · '))}${s.note ? ' · ' + esc(s.note) : ''}</div>
@@ -3379,11 +3395,17 @@ function openBackup() {
       </ul>
       <input type="file" id="restoreFile" accept="application/json,.json" hidden>
     </details>
-    <p class="hint">快照包含零件、订单、报工等全部数据；图片在 data/images/{parts,attachments} 里（零件图按零件名、附件按上传日期+序号命名），迁移服务器时请连同 data 文件夹一起复制。</p>
+    <p class="hint">快照包含零件、订单、报工等全部数据；图片在 data/images/{parts,attachments,drawings} 里（零件图按零件名、附件按上传日期+序号命名），迁移服务器时请连同 data 文件夹一起复制。</p>
+    <div class="snap-danger">
+      <div class="snap-danger-head">${icon('alert', 15)}数据清除</div>
+      <p>清空零件、订单、报工单及全部图片；快照会保留，误清除后可恢复。</p>
+      <button type="button" class="btn btn-danger" id="clearData">${icon('trash', 15)}清空全部业务数据…</button>
+    </div>
     <div class="modal-actions"><button class="btn btn-ghost" data-cancel>关闭</button></div>
   `);
 
   root.querySelector('[data-cancel]').addEventListener('click', close);
+  root.querySelector('#clearData').addEventListener('click', () => openClearData());
   loadSnapshots(root);
 
   const noteInput = root.querySelector('#snapNote');
@@ -3491,6 +3513,61 @@ function openBackup() {
   });
 }
 
+/* 数据清除：二次验证——已设密码须重输密码，否则须输入固定确认语句 */
+function openClearData() {
+  const needPwd = !!state.auth;
+  const { root, close } = openModal(
+    `
+    <h3>清空全部业务数据？</h3>
+    <p>零件、订单、报工单和全部图片都会被删除，且无法撤销。清除前会自动创建一份快照，可在「已有快照」中恢复。</p>
+    <div class="clear-verify">
+      <label for="clearVerifyInput">${needPwd ? '请输入登录密码以继续' : '请输入「清除全部数据」以继续'}</label>
+      <input class="input" id="clearVerifyInput" type="${needPwd ? 'password' : 'text'}"
+        autocomplete="${needPwd ? 'current-password' : 'off'}"
+        placeholder="${needPwd ? '登录密码' : '清除全部数据'}">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" data-cancel>取消</button>
+      <button class="btn btn-danger" data-ok disabled>确认清除</button>
+    </div>
+  `,
+    () => openBackup()
+  );
+  const input = root.querySelector('#clearVerifyInput');
+  const ok = root.querySelector('[data-ok]');
+  root.querySelector('[data-cancel]').addEventListener('click', () => {
+    close();
+    openBackup();
+  });
+  input.addEventListener('input', () => {
+    ok.disabled = input.value.trim() === '';
+  });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !ok.disabled) ok.click();
+  });
+  input.focus();
+
+  ok.addEventListener('click', async () => {
+    const value = input.value;
+    if (!value.trim()) return;
+    ok.disabled = true;
+    input.disabled = true;
+    try {
+      const res = await api('POST', 'api.php?action=data.clear', needPwd ? { password: value } : { phrase: value.trim() });
+      const n = (res.cleared && res.cleared.parts) || 0;
+      toast(`已清除全部数据（零件 ${fmtQty(n)} 个、图片 ${fmtQty(res.images || 0)} 张）`, 'ok');
+      await refreshState();
+      route();
+      openBackup();
+    } catch (err) {
+      ok.disabled = false;
+      input.disabled = false;
+      if (err.status === 403) input.select();
+      if (err.status !== 401) toast(err.message || '清除失败', 'err');
+    }
+  });
+}
+
 async function logout() {
   try {
     await api('POST', 'api.php?action=logout', {});
@@ -3513,6 +3590,21 @@ function pluginFieldHtml(f) {
       val && val !== '0' ? 'checked' : ''
     }><span>${esc(f.label)}</span></label>`;
   }
+  if (f.type === 'multiselect') {
+    const selected = val.split(/[,，\s]+/).filter(Boolean);
+    const opts = (f.options || [])
+      .map(
+        (o) => `<label class="plugin-check"><input type="checkbox" data-field="${esc(f.key)}" data-multi value="${esc(
+          o.value
+        )}" ${selected.includes(String(o.value)) ? 'checked' : ''} ${
+          o.disabled && !selected.includes(String(o.value)) ? 'disabled' : ''
+        }><span>${esc(o.label)}</span></label>`
+      )
+      .join('');
+    return `<div class="field plugin-field plugin-field-wide"><label>${esc(f.label)}</label><div class="plugin-multi">${
+      opts || '<span class="hint">没有其它已安装的识别引擎</span>'
+    }</div>${f.hint ? `<div class="hint">${esc(f.hint)}</div>` : ''}</div>`;
+  }
   let ctrl;
   if (f.type === 'select') {
     ctrl = `<select class="select" data-field="${esc(f.key)}">${(f.options || [])
@@ -3524,10 +3616,15 @@ function pluginFieldHtml(f) {
     )}" spellcheck="false">${esc(val)}</textarea>`;
   } else {
     const type = f.type === 'number' ? 'number' : f.type === 'password' ? 'password' : 'text';
-    const step = f.type === 'number' ? ' step="any"' : '';
-    ctrl = `<input class="input" type="${type}"${step} data-field="${esc(f.key)}" value="${esc(val)}" placeholder="${esc(
-      f.placeholder || ''
-    )}" autocomplete="off" spellcheck="false">`;
+    let attrs = '';
+    if (f.type === 'number') {
+      attrs += ` step="${f.step === undefined ? 'any' : Number(f.step)}"`;
+      if (f.min !== undefined) attrs += ` min="${Number(f.min)}"`;
+      if (f.max !== undefined) attrs += ` max="${Number(f.max)}"`;
+    }
+    ctrl = `<input class="input" type="${type}"${attrs} data-field="${esc(f.key)}" value="${esc(
+      val
+    )}" placeholder="${esc(f.placeholder || '')}" autocomplete="off" spellcheck="false">`;
   }
   return `<div class="field plugin-field"><label>${esc(f.label)}</label>${ctrl}${
     f.hint ? `<div class="hint">${esc(f.hint)}</div>` : ''
@@ -3591,6 +3688,67 @@ function netResultHtml(res) {
   return `${rows}<div class="check-note">curl 扩展：${res.curl ? '已启用' : '未启用'} · 测试时间 ${esc(res.time || '')}</div>`;
 }
 
+function engineOverviewHtml() {
+  const list = state.plugins.filter((p) => (p.capabilities || []).includes('report.ocr'));
+  const enabled = list.filter((p) => p.enabled);
+  const fusion = list.find(isFusionPlugin);
+  const stored = storedOcrEngine();
+  let fusionNote = '未安装融合引擎';
+  if (fusion) {
+    const f = (fusion.settings || []).find((x) => x.key === 'engines');
+    const ids = f && f.value ? String(f.value).split(/[,，\s]+/).filter(Boolean) : [];
+    const usable = ids.length
+      ? ids.filter((id) => enabled.some((p) => p.id === id)).length
+      : enabled.filter((p) => !isFusionPlugin(p)).length;
+    fusionNote = fusion.enabled
+      ? `融合引擎已启用，参与引擎 ${usable} 路`
+      : '融合引擎未启用';
+  }
+  const chips = list
+    .map(
+      (p) => `<span class="engine-chip ${p.enabled ? 'on' : ''}">${esc(p.name)}<i>${
+        p.enabled ? '已启用' : '已停用'
+      }</i>${isFusionPlugin(p) ? '<b>融合</b>' : ''}</span>`
+    )
+    .join('');
+  const opts = enabled
+    .map(
+      (p) =>
+        `<option value="${esc(p.id)}" ${stored === p.id ? 'selected' : ''}>${esc(p.name)}${
+          isFusionPlugin(p) ? ' · 融合' : ''
+        }</option>`
+    )
+    .join('');
+  return `<div class="plugin-card engine-card">
+    <div class="plugin-head">
+      <div class="plugin-title">
+        <div class="plugin-name">识别引擎<span class="plugin-ver">默认使用</span></div>
+        <p class="plugin-desc">拍照识别默认使用的引擎；多路融合会交叉比对并给出综合置信度与分歧告警。</p>
+      </div>
+    </div>
+    <div class="plugin-fields">
+      <div class="field plugin-field">
+        <label>默认识别引擎</label>
+        <select class="select" id="defaultEngineSel" ${enabled.length ? '' : 'disabled'}>
+          <option value="" ${stored ? '' : 'selected'}>自动（优先融合引擎）</option>
+          ${opts}
+        </select>
+        <div class="hint">${
+          enabled.length
+            ? '只列出已启用的引擎；切换后立即生效，也可以在拍照识别处临时切换'
+            : '没有已启用的识别引擎，请先在下方启用插件'
+        }</div>
+      </div>
+    </div>
+    <div class="engine-chips">${chips || '<span class="hint">还没有安装识别插件</span>'}</div>
+    ${
+      fusion
+        ? `<div class="engine-note">${esc(fusionNote)} · 综合置信度低于「最低置信度」时将提示人工复核</div>`
+        : ''
+    }
+  </div>`;
+}
+
 function viewSettings() {
   setHead(
     '识别插件',
@@ -3609,9 +3767,20 @@ function viewSettings() {
 
   view.innerHTML = `<div class="settings-list" id="settingsList">
       ${netCardHtml()}
+      ${engineOverviewHtml()}
       ${state.plugins.map(pluginCardHtml).join('') || emptyHint}
     </div>
     <p class="settings-note">插件目录 <code>public/plugins/&lt;id&gt;/</code> · 配置保存在 <code>data/plugins.json</code>。识别出的日期、零件、工序、数量会自动填入报工单，保存前请人工核对。</p>`;
+
+  $('#settingsList').addEventListener('change', (e) => {
+    if (!e.target || e.target.id !== 'defaultEngineSel') return;
+    setStoredOcrEngine(e.target.value);
+    const p = state.plugins.find((x) => x.id === e.target.value);
+    toast(
+      e.target.value ? '默认识别引擎已切换为 ' + (p ? p.name : e.target.value) : '已改为自动选择识别引擎',
+      'ok'
+    );
+  });
 
   $('#settingsList').addEventListener('click', async (e) => {
     const netBtn = e.target.closest('[data-net-test]');
@@ -3699,7 +3868,13 @@ function viewSettings() {
     if (!card) return;
     const settings = {};
     $$('[data-field]', card).forEach((el) => {
-      settings[el.dataset.field] = el.type === 'checkbox' ? el.checked : el.value;
+      const key = el.dataset.field;
+      if (el.hasAttribute('data-multi')) {
+        if (!Array.isArray(settings[key])) settings[key] = [];
+        if (el.checked) settings[key].push(el.value);
+      } else {
+        settings[key] = el.type === 'checkbox' ? el.checked : el.value;
+      }
     });
     const toggle = $('[data-plugin-enabled]', card);
     saveBtn.disabled = true;

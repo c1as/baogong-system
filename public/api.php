@@ -1179,6 +1179,44 @@ function bg_backup_force($reason = 'manual', $note = '')
     return bg_snapshot_create($reason, $note);
 }
 
+/* 清空全部业务数据：零件 / 订单 / 报工单及全部图片；快照保留，便于误清除后恢复 */
+function bg_data_clear()
+{
+    global $PART_IMG_DIR, $ATT_IMG_DIR, $DRAW_DIR, $BG_SNAP;
+    $counts = bg_snapshot_counts();
+    $pdo = bg_pdo();
+    $pdo->beginTransaction();
+    try {
+        $pdo->exec('DELETE FROM report_items');
+        $pdo->exec('DELETE FROM reports');
+        $pdo->exec('DELETE FROM orders');
+        $pdo->exec('DELETE FROM parts');
+        $pdo->commit();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        throw $e;
+    }
+    $images = 0;
+    foreach (array($PART_IMG_DIR, $ATT_IMG_DIR, $DRAW_DIR) as $dir) {
+        $items = @scandir($dir);
+        if (!is_array($items)) {
+            continue;
+        }
+        foreach ($items as $f) {
+            if ($f === '.' || $f === '..') {
+                continue;
+            }
+            if (is_file($dir . '/' . $f) && @unlink($dir . '/' . $f)) {
+                $images++;
+            }
+        }
+    }
+    $BG_SNAP = null;
+    return array('cleared' => $counts, 'images' => $images);
+}
+
 function bg_sorted($list)
 {
     usort($list, function ($a, $b) {
@@ -1561,7 +1599,9 @@ function bg_normalize_part($in, $existing)
     $name = bg_str(isset($in['name']) ? $in['name'] : '', 60, '零件名称');
     $material = bg_str(isset($in['material']) ? $in['material'] : '', 60, '材料');
     $note = bg_str(isset($in['note']) ? $in['note'] : '', 500, '备注');
-    $stockValue = isset($in['stock']) ? $in['stock'] : 0;
+    $stockValue = isset($in['stock'])
+        ? $in['stock']
+        : ($existing && isset($existing['stock']) ? $existing['stock'] : 0);
     if ($stockValue === null || $stockValue === '') {
         $stockValue = 0;
     }
@@ -1915,7 +1955,7 @@ function bg_plugin_field($f)
     if (!preg_match('/^[A-Za-z][A-Za-z0-9_]{0,31}$/', $key)) {
         return null;
     }
-    $types = array('text', 'password', 'number', 'select', 'checkbox', 'textarea');
+    $types = array('text', 'password', 'number', 'select', 'checkbox', 'textarea', 'multiselect');
     $type = isset($f['type']) && in_array($f['type'], $types, true) ? $f['type'] : 'text';
     $out = array(
         'key' => $key,
@@ -1929,7 +1969,18 @@ function bg_plugin_field($f)
         $rows = isset($f['rows']) ? (int)$f['rows'] : 4;
         $out['rows'] = $rows < 2 ? 2 : ($rows > 12 ? 12 : $rows);
     }
-    if ($type === 'select') {
+    if ($type === 'number') {
+        if (isset($f['min']) && is_numeric($f['min'])) {
+            $out['min'] = (float)$f['min'];
+        }
+        if (isset($f['max']) && is_numeric($f['max'])) {
+            $out['max'] = (float)$f['max'];
+        }
+        if (isset($f['step']) && is_numeric($f['step']) && (float)$f['step'] > 0) {
+            $out['step'] = (float)$f['step'];
+        }
+    }
+    if ($type === 'select' || $type === 'multiselect') {
         $opts = array();
         if (isset($f['options']) && is_array($f['options'])) {
             foreach ($f['options'] as $o) {
@@ -1944,6 +1995,10 @@ function bg_plugin_field($f)
             }
         }
         $out['options'] = $opts;
+        if ($type === 'multiselect') {
+            $out['source'] = isset($f['source']) && is_string($f['source']) && preg_match('/^[a-zA-Z][a-zA-Z0-9]{0,31}$/', $f['source'])
+                ? $f['source'] : '';
+        }
     }
     return $out;
 }
@@ -1994,6 +2049,7 @@ function bg_plugin_manifest($file)
         'settings' => $fields,
         'entry' => $entry,
         'check' => $check,
+        'defaultEnabled' => !isset($m['defaultEnabled']) || (bool)$m['defaultEnabled'],
         'dir' => dirname($file),
     );
 }
@@ -2041,10 +2097,14 @@ function bg_plugin_one($id)
 function bg_plugin_is_enabled($id)
 {
     $state = bg_plugin_state_load();
-    if (!isset($state[$id]) || !is_array($state[$id])) {
-        return true;
+    if (isset($state[$id]) && is_array($state[$id]) && array_key_exists('enabled', $state[$id])) {
+        return (bool)$state[$id]['enabled'];
     }
-    return !isset($state[$id]['enabled']) || (bool)$state[$id]['enabled'];
+    $all = bg_plugin_all();
+    if (isset($all[$id]) && array_key_exists('defaultEnabled', $all[$id])) {
+        return (bool)$all[$id]['defaultEnabled'];
+    }
+    return true;
 }
 
 function bg_plugin_config($m)
@@ -2060,11 +2120,31 @@ function bg_plugin_config($m)
     return $cfg;
 }
 
+function bg_plugin_engine_options($selfId)
+{
+    $opts = array();
+    foreach (bg_plugin_all() as $p) {
+        if ($p['id'] === $selfId || !in_array('report.ocr', $p['capabilities'], true)) {
+            continue;
+        }
+        $enabled = bg_plugin_is_enabled($p['id']);
+        $opts[] = array(
+            'value' => $p['id'],
+            'label' => bg_plugin_cut($p['name'] . ($enabled ? '' : '（已停用）'), 40),
+            'disabled' => !$enabled,
+        );
+    }
+    return $opts;
+}
+
 function bg_plugin_public($m)
 {
     $cfg = bg_plugin_config($m);
     $fields = array();
     foreach ($m['settings'] as $f) {
+        if ($f['type'] === 'multiselect' && isset($f['source']) && $f['source'] === 'ocrEngines') {
+            $f['options'] = bg_plugin_engine_options($m['id']);
+        }
         $f['value'] = $f['type'] === 'password' && $cfg[$f['key']] !== '' ? '********' : $cfg[$f['key']];
         unset($f['default']);
         $fields[] = $f;
@@ -2210,6 +2290,65 @@ function bg_plugin_invoke($id, $dataUrl)
         bg_fail(502, '识别插件没有返回结果');
     }
 
+    $result = bg_plugin_normalize_result($out);
+    $result['plugin'] = array('id' => $m['id'], 'name' => $m['name'], 'version' => $m['version']);
+    return $result;
+}
+
+/**
+ * 供融合类插件调用其它识别引擎：单路失败只抛出异常，不中断整体请求。
+ * 返回与 bg_plugin_invoke() 相同的归一化结构。
+ */
+function bg_plugin_invoke_engine($id, $ctx)
+{
+    global $BG_PLUGIN_CTX, $BG_THROW;
+    if (!is_string($id) || !preg_match('/^[a-z0-9][a-z0-9-]{0,31}$/', $id)) {
+        throw new RuntimeException('引擎标识不合法');
+    }
+    $all = bg_plugin_all();
+    if (!isset($all[$id])) {
+        throw new RuntimeException('插件未安装');
+    }
+    $m = $all[$id];
+    if (!bg_plugin_is_enabled($id)) {
+        throw new RuntimeException('插件已停用');
+    }
+    $child = array(
+        'id' => $m['id'],
+        'image' => isset($ctx['image']) && is_string($ctx['image']) ? $ctx['image'] : '',
+        'catalog' => isset($ctx['catalog']) && is_array($ctx['catalog']) ? $ctx['catalog'] : array(),
+        'config' => bg_plugin_config($m),
+        'locale' => 'zh-CN',
+        'today' => isset($ctx['today']) ? (string)$ctx['today'] : date('Y-m-d'),
+    );
+
+    $prevCtx = isset($GLOBALS['BG_PLUGIN_CTX']) ? $GLOBALS['BG_PLUGIN_CTX'] : null;
+    $prevThrow = $BG_THROW;
+    $GLOBALS['BG_PLUGIN_CTX'] = $child;
+    $BG_THROW = true;
+    try {
+        /* 用闭包隔离被引入脚本的局部变量，避免覆盖本函数的变量 */
+        $runner = function ($__bg_file) {
+            return include $__bg_file;
+        };
+        $ret = $runner($m['dir'] . '/' . $m['entry']);
+        if (is_array($ret)) {
+            $out = $ret;
+        } elseif (function_exists('bg_plugin_run')) {
+            $out = bg_plugin_run($child);
+        } else {
+            $out = null;
+        }
+    } catch (Throwable $e) {
+        $GLOBALS['BG_PLUGIN_CTX'] = $prevCtx;
+        $BG_THROW = $prevThrow;
+        throw new RuntimeException($e->getMessage());
+    }
+    $GLOBALS['BG_PLUGIN_CTX'] = $prevCtx;
+    $BG_THROW = $prevThrow;
+    if (!is_array($out)) {
+        throw new RuntimeException('没有返回结果');
+    }
     $result = bg_plugin_normalize_result($out);
     $result['plugin'] = array('id' => $m['id'], 'name' => $m['name'], 'version' => $m['version']);
     return $result;
@@ -2811,6 +2950,31 @@ switch ($action) {
         bg_json(200, array('ok' => true));
         break;
 
+    case 'data.clear':
+        if ($method !== 'POST') {
+            bg_fail(405, '请求方法不支持');
+        }
+        $body = bg_body();
+        /* 二次验证：已设置密码须重新输入密码，否则须输入固定确认语句 */
+        if ($APP_PASSWORD !== '') {
+            $pwd = isset($body['password']) && is_string($body['password']) ? $body['password'] : '';
+            if ($pwd === '' || strlen($pwd) !== strlen($APP_PASSWORD) || !hash_equals($APP_PASSWORD, $pwd)) {
+                bg_fail(403, '密码不正确，未清除任何数据');
+            }
+        } else {
+            $phrase = isset($body['phrase']) && is_string($body['phrase']) ? trim($body['phrase']) : '';
+            if ($phrase !== '清除全部数据') {
+                bg_fail(400, '确认语句不正确，未清除任何数据');
+            }
+        }
+        $counts = bg_snapshot_counts();
+        if ($counts['parts'] > 0 || $counts['orders'] > 0 || $counts['reports'] > 0) {
+            bg_snapshot_create('pre-clear', '清除全部数据前自动备份');
+        }
+        $res = bg_data_clear();
+        bg_json(200, array('ok' => true, 'cleared' => $res['cleared'], 'images' => $res['images']));
+        break;
+
     case 'backup.download':
         $name = isset($_GET['id']) ? (string)$_GET['id'] : '';
         $path = bg_snapshot_path($name);
@@ -2843,7 +3007,7 @@ switch ($action) {
             'imageBase' => 'api.php?action=image&f=',
             'counts' => bg_bootstrap_counts($pdo),
             'firstDate' => $first,
-            'version' => '2.3',
+            'version' => '2.5',
         ));
         break;
 
@@ -3266,7 +3430,7 @@ switch ($action) {
         $where = bg_like_any($params, $q, array('p.no', 'p.name', 'p.material'), 'ep');
         $stmt = $pdo->prepare('SELECT p.* FROM parts p WHERE ' . $where . ' ORDER BY COALESCE(p.updated_at, \'\') DESC, p.id DESC');
         $stmt->execute($params);
-        $head = array('零件图号', '零件名称', '材料', '库存数量', '备注');
+        $head = array('零件图号', '零件名称', '材料', '备注');
         for ($i = 1; $i <= 9; $i++) {
             $head[] = '工序' . $i;
             $head[] = '工序说明' . $i;
@@ -3276,7 +3440,7 @@ switch ($action) {
         foreach ($stmt as $row) {
             $p = bg_part_row($row);
             $ps = isset($p['processes']) && is_array($p['processes']) ? $p['processes'] : array();
-            $line = array($p['no'], $p['name'], $p['material'], $p['stock'], $p['note']);
+            $line = array($p['no'], $p['name'], $p['material'], $p['note']);
             for ($i = 0; $i < 9; $i++) {
                 $x = isset($ps[$i]) ? $ps[$i] : null;
                 $line[] = $x ? (isset($x['name']) ? $x['name'] : '') : '';
@@ -3378,8 +3542,31 @@ switch ($action) {
                 } elseif (!is_numeric($v)) {
                     bg_fail(400, $f['label'] . '必须是数字');
                 } else {
-                    $next['settings'][$f['key']] = (string)(float)$v;
+                    $num = (float)$v;
+                    if (isset($f['min']) && $num < (float)$f['min']) {
+                        bg_fail(400, $f['label'] . '不能小于 ' . $f['min']);
+                    }
+                    if (isset($f['max']) && $num > (float)$f['max']) {
+                        bg_fail(400, $f['label'] . '不能大于 ' . $f['max']);
+                    }
+                    $next['settings'][$f['key']] = (string)$num;
                 }
+            } elseif ($f['type'] === 'multiselect') {
+                $arr = is_array($v) ? $v : preg_split('/[\s,，、;；]+/u', is_scalar($v) ? (string)$v : '');
+                $allowed = array();
+                foreach (bg_plugin_all() as $p) {
+                    if ($p['id'] === $m['id'] || !in_array('report.ocr', $p['capabilities'], true)) {
+                        continue;
+                    }
+                    $allowed[$p['id']] = true;
+                }
+                $picked = array();
+                foreach ($arr as $x) {
+                    if (is_string($x) && isset($allowed[$x]) && !in_array($x, $picked, true)) {
+                        $picked[] = $x;
+                    }
+                }
+                $next['settings'][$f['key']] = implode(',', $picked);
             } else {
                 $s = is_scalar($v) ? trim((string)$v) : '';
                 $limit = $f['type'] === 'textarea' ? 2000 : 500;
