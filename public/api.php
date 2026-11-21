@@ -173,6 +173,7 @@ $SNAP_DIR = $DATA_DIR . '/snapshots';
 $IMG_ROOT = $DATA_DIR . '/images';
 $PART_IMG_DIR = $IMG_ROOT . '/parts';
 $ATT_IMG_DIR = $IMG_ROOT . '/attachments';
+$DRAW_DIR = $IMG_ROOT . '/drawings';
 $IMG_DIR = $IMG_ROOT;
 $BACKUP_DIR = $SNAP_DIR;
 $DB_FILE = $DB_DIR . '/baogong.sqlite';
@@ -180,7 +181,7 @@ $SECRET_FILE = $DATA_DIR . '/.secret';
 $BG_SNAP = null;
 $BG_PDO = null;
 
-foreach (array($DATA_DIR, $DB_DIR, $SNAP_DIR, $PART_IMG_DIR, $ATT_IMG_DIR) as $bgDir) {
+foreach (array($DATA_DIR, $DB_DIR, $SNAP_DIR, $PART_IMG_DIR, $ATT_IMG_DIR, $DRAW_DIR) as $bgDir) {
     if (!is_dir($bgDir)) {
         @mkdir($bgDir, 0775, true);
     }
@@ -230,7 +231,7 @@ function bg_image_name($v)
         $v = substr($v, 0, $p);
     }
     $v = ltrim(str_replace('\\', '/', $v), '/');
-    if (preg_match('#^(parts|attachments)/([^/]+)$#', $v, $m)) {
+    if (preg_match('#^(parts|attachments|drawings)/([^/]+)$#', $v, $m)) {
         return $m[1] . '/' . $m[2];
     }
     $slash = strrpos($v, '/');
@@ -243,14 +244,14 @@ function bg_image_name($v)
 /* 按名字在各图片目录中定位文件：parts/ → attachments/ → 旧版 images 根目录 */
 function bg_image_path($name)
 {
-    global $IMG_ROOT, $PART_IMG_DIR, $ATT_IMG_DIR;
+    global $IMG_ROOT, $PART_IMG_DIR, $ATT_IMG_DIR, $DRAW_DIR;
     $name = bg_image_name($name);
     if ($name === '') {
         return '';
     }
     $segs = explode('/', $name);
     $file = end($segs);
-    if (!preg_match('/^[0-9A-Za-z_.\-\x{4e00}-\x{9fa5}]+\.(jpg|jpeg|png|webp)$/u', $file)) {
+    if (!preg_match('/^[0-9A-Za-z_.\-\x{4e00}-\x{9fa5}]+\.(jpg|jpeg|png|webp|pdf)$/u', $file)) {
         return '';
     }
     $dirs = array();
@@ -259,10 +260,13 @@ function bg_image_path($name)
             $dirs[] = $PART_IMG_DIR;
         } elseif ($segs[0] === 'attachments') {
             $dirs[] = $ATT_IMG_DIR;
+        } elseif ($segs[0] === 'drawings') {
+            $dirs[] = $DRAW_DIR;
         }
     }
     $dirs[] = $PART_IMG_DIR;
     $dirs[] = $ATT_IMG_DIR;
+    $dirs[] = $DRAW_DIR;
     $dirs[] = $IMG_ROOT;
     foreach ($dirs as $d) {
         if (is_file($d . '/' . $file)) {
@@ -476,11 +480,12 @@ function bg_migrate_part($p)
                 continue;
             }
             $name = isset($x['name']) ? (string)$x['name'] : '';
+            $desc = isset($x['desc']) ? (string)$x['desc'] : '';
             $price = bg_round(isset($x['price']) ? (float)$x['price'] : 0);
             if ($name === '' && $price == 0) {
                 continue;
             }
-            $processes[] = array('name' => $name, 'price' => $price);
+            $processes[] = array('name' => $name, 'desc' => $desc, 'price' => $price);
         }
     }
     if (count($processes) === 0) {
@@ -493,6 +498,7 @@ function bg_migrate_part($p)
     $p['image'] = bg_image_name(isset($p['image']) ? $p['image'] : '');
     $p['stock'] = isset($p['stock']) && is_numeric($p['stock']) ? (float)$p['stock'] : 0;
     $p['processes'] = $processes;
+    $p['drawings'] = bg_normalize_drawings($p, null);
     $p['price'] = count($processes) ? $processes[0]['price'] : 0;
     unset($p['process']);
     return $p;
@@ -571,6 +577,7 @@ function bg_sqlite_schema($pdo)
             stock REAL DEFAULT 0,
             image TEXT DEFAULT '',
             processes TEXT DEFAULT '[]',
+            drawings TEXT DEFAULT '[]',
             created_at TEXT,
             updated_at TEXT
         )",
@@ -618,10 +625,26 @@ function bg_sqlite_schema($pdo)
         'CREATE INDEX IF NOT EXISTS idx_items_report ON report_items(report_id)',
         'CREATE INDEX IF NOT EXISTS idx_items_order ON report_items(order_id)',
         'CREATE INDEX IF NOT EXISTS idx_items_part ON report_items(part_id)',
-        'CREATE INDEX IF NOT EXISTS idx_orders_date ON orders(date)'
+        'CREATE INDEX IF NOT EXISTS idx_orders_date ON orders(date)',
+        'CREATE INDEX IF NOT EXISTS idx_orders_part ON orders(part_id, date)',
+        'CREATE INDEX IF NOT EXISTS idx_parts_updated ON parts(updated_at DESC)',
+        'CREATE INDEX IF NOT EXISTS idx_reports_created ON reports(date DESC, created_at DESC)',
+        'CREATE INDEX IF NOT EXISTS idx_items_part_order ON report_items(part_id, order_id)'
     );
     foreach ($sql as $one) {
         $pdo->exec($one);
+    }
+    /* v2.3：旧库补 parts.drawings 列，只做一次，不影响已有数据 */
+    $cols = array();
+    foreach ($pdo->query('PRAGMA table_info(parts)') as $c) {
+        $cols[$c['name']] = true;
+    }
+    if (!isset($cols['drawings'])) {
+        try {
+            $pdo->exec("ALTER TABLE parts ADD COLUMN drawings TEXT DEFAULT '[]'");
+        } catch (Throwable $e) {
+            /* 并发初始化时可能已被另一个请求加上，忽略 */
+        }
     }
 }
 
@@ -706,6 +729,10 @@ function bg_db_load()
         if (!is_array($processes)) {
             $processes = array();
         }
+        $drawings = json_decode(isset($row['drawings']) ? $row['drawings'] : '[]', true);
+        if (!is_array($drawings)) {
+            $drawings = array();
+        }
         $db['parts'][] = array(
             'id' => $row['id'],
             'no' => $row['no'],
@@ -715,6 +742,7 @@ function bg_db_load()
             'stock' => (float)$row['stock'],
             'image' => isset($row['image']) ? $row['image'] : '',
             'processes' => $processes,
+            'drawings' => $drawings,
             'price' => count($processes) ? (float)$processes[0]['price'] : 0,
             'createdAt' => isset($row['created_at']) ? $row['created_at'] : '',
             'updatedAt' => isset($row['updated_at']) ? $row['updated_at'] : '',
@@ -781,11 +809,12 @@ function bg_sync_parts($pdo, $parts)
 {
     global $BG_SNAP;
     $stmt = $pdo->prepare(
-        'INSERT INTO parts (id, no, name, material, note, stock, image, processes, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        'INSERT INTO parts (id, no, name, material, note, stock, image, processes, drawings, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            no = excluded.no, name = excluded.name, material = excluded.material, note = excluded.note,
-           stock = excluded.stock, image = excluded.image, processes = excluded.processes, updated_at = excluded.updated_at'
+           stock = excluded.stock, image = excluded.image, processes = excluded.processes,
+           drawings = excluded.drawings, updated_at = excluded.updated_at'
     );
     $seen = array();
     foreach ($parts as $p) {
@@ -803,6 +832,7 @@ function bg_sync_parts($pdo, $parts)
             isset($p['stock']) ? (float)$p['stock'] : 0,
             isset($p['image']) ? $p['image'] : '',
             json_encode(isset($p['processes']) ? $p['processes'] : array(), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+            json_encode(isset($p['drawings']) ? $p['drawings'] : array(), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
             isset($p['createdAt']) ? $p['createdAt'] : gmdate('Y-m-d\TH:i:s\Z'),
             isset($p['updatedAt']) ? $p['updatedAt'] : gmdate('Y-m-d\TH:i:s\Z'),
         ));
@@ -1372,6 +1402,119 @@ function bg_image_save($sub, $base, $dataUrl, $dedupe = '')
     return $prefix . '/' . $name . $ext;
 }
 
+/* 图纸列表规范化：只保留 drawings/ 下的图片或 PDF */
+function bg_normalize_drawings($in, $existing)
+{
+    $src = null;
+    if (isset($in['drawings']) && is_array($in['drawings'])) {
+        $src = $in['drawings'];
+    } elseif ($existing && isset($existing['drawings']) && is_array($existing['drawings'])) {
+        $src = $existing['drawings'];
+    }
+    $out = array();
+    if (is_array($src)) {
+        foreach ($src as $d) {
+            if (!is_array($d)) {
+                continue;
+            }
+            $path = bg_image_name(isset($d['path']) ? $d['path'] : '');
+            if ($path === '' || strpos($path, 'drawings/') !== 0) {
+                continue;
+            }
+            $name = isset($d['name']) && (string)$d['name'] !== '' ? basename((string)$d['name']) : basename($path);
+            $type = isset($d['type']) && $d['type'] === 'pdf' ? 'pdf' : 'image';
+            $out[] = array('path' => $path, 'name' => $name, 'type' => $type);
+            if (count($out) >= 20) {
+                break;
+            }
+        }
+    }
+    return $out;
+}
+
+/* 保存一张图纸：图片（JPG/PNG/WebP）或 PDF，原样存盘不压缩 */
+function bg_drawing_save($part, $dataUrl)
+{
+    global $DRAW_DIR;
+    if (!is_string($dataUrl) || $dataUrl === '') {
+        bg_fail(400, '图纸内容为空');
+    }
+    $ext = '';
+    $bin = false;
+    if (preg_match('#^data:image/(jpeg|png|webp);base64,(.+)$#s', $dataUrl, $m)) {
+        $ext = $m[1] === 'jpeg' ? 'jpg' : $m[1];
+        $bin = base64_decode(preg_replace('/\s+/', '', $m[2]), true);
+        if ($bin !== false && strlen($bin) > 8388608) {
+            bg_fail(400, '图片图纸太大（限 8MB）');
+        }
+    } elseif (preg_match('#^data:application/pdf;base64,(.+)$#s', $dataUrl, $m)) {
+        $ext = 'pdf';
+        $bin = base64_decode(preg_replace('/\s+/', '', $m[1]), true);
+        if ($bin !== false && strlen($bin) > 20971520) {
+            bg_fail(400, 'PDF 图纸太大（限 20MB）');
+        }
+    } else {
+        bg_fail(400, '图纸格式不支持（请用 JPG / PNG / WebP / PDF）');
+    }
+    if ($bin === false || $bin === '') {
+        bg_fail(400, '图纸内容为空');
+    }
+    $base = bg_part_image_base($part);
+    $i = 1;
+    while (is_file($DRAW_DIR . '/' . $base . '-' . $i . '.' . $ext)) {
+        $i++;
+    }
+    $fname = $base . '-' . $i . '.' . $ext;
+    if (@file_put_contents($DRAW_DIR . '/' . $fname, $bin) === false) {
+        bg_fail(500, '图纸保存失败，请检查 drawings 目录权限');
+    }
+    return array('path' => 'drawings/' . $fname, 'name' => $fname, 'type' => $ext === 'pdf' ? 'pdf' : 'image');
+}
+
+/* 零件改名后同步图纸文件名 */
+function bg_drawings_rename($drawings, $part)
+{
+    global $DRAW_DIR;
+    if (!is_array($drawings) || !count($drawings)) {
+        return array();
+    }
+    $base = bg_part_image_base($part);
+    $out = array();
+    $i = 0;
+    foreach ($drawings as $d) {
+        $i++;
+        $src = bg_image_path(isset($d['path']) ? $d['path'] : '');
+        $type = isset($d['type']) && $d['type'] === 'pdf' ? 'pdf' : 'image';
+        if ($src === '' || str_replace('\\', '/', dirname($src)) !== str_replace('\\', '/', $DRAW_DIR)) {
+            $out[] = array(
+                'path' => isset($d['path']) ? $d['path'] : '',
+                'name' => isset($d['name']) ? $d['name'] : '',
+                'type' => $type,
+            );
+            continue;
+        }
+        $ext = strtolower(pathinfo($src, PATHINFO_EXTENSION));
+        $name = $base . '-' . $i;
+        $try = $name;
+        $n = 2;
+        while (is_file($DRAW_DIR . '/' . $try . '.' . $ext) && $DRAW_DIR . '/' . $try . '.' . $ext !== $src) {
+            $try = $name . '-' . $n;
+            $n++;
+        }
+        $dst = $DRAW_DIR . '/' . $try . '.' . $ext;
+        if ($dst !== $src && !@rename($src, $dst)) {
+            $out[] = array(
+                'path' => isset($d['path']) ? $d['path'] : '',
+                'name' => isset($d['name']) ? $d['name'] : '',
+                'type' => $type,
+            );
+            continue;
+        }
+        $out[] = array('path' => 'drawings/' . $try . '.' . $ext, 'name' => $try . '.' . $ext, 'type' => $type);
+    }
+    return $out;
+}
+
 /* ================================================================ 零件 */
 
 function bg_normalize_processes($in, $existing)
@@ -1398,11 +1541,12 @@ function bg_normalize_processes($in, $existing)
             if ($name === '') {
                 continue;
             }
+            $desc = bg_str(isset($raw['desc']) ? $raw['desc'] : '', 200, '工序说明');
             $price = 0;
             if (isset($raw['price']) && $raw['price'] !== '' && $raw['price'] !== null) {
                 $price = bg_round(bg_num($raw['price'], '工序单价', 0, 1000000));
             }
-            $out[] = array('name' => $name, 'price' => $price);
+            $out[] = array('name' => $name, 'desc' => $desc, 'price' => $price);
         }
     }
     return $out;
@@ -1434,6 +1578,7 @@ function bg_normalize_part($in, $existing)
         'stock' => $stock,
         'image' => $existing && isset($existing['image']) ? $existing['image'] : '',
         'processes' => $processes,
+        'drawings' => bg_normalize_drawings($in, $existing),
         'price' => count($processes) ? $processes[0]['price'] : 0,
         'createdAt' => $existing && isset($existing['createdAt']) ? $existing['createdAt'] : $now,
         'updatedAt' => $now,
@@ -2075,6 +2220,461 @@ function bg_part_processes($p)
     return (isset($p['processes']) && is_array($p['processes'])) ? $p['processes'] : array();
 }
 
+/* ================================================================ 只读分页接口 */
+
+function bg_get($key, $max = 200)
+{
+    $v = isset($_GET[$key]) && is_string($_GET[$key]) ? trim($_GET[$key]) : '';
+    if ($v !== '' && bg_len($v) > $max) {
+        $v = function_exists('mb_substr') ? mb_substr($v, 0, $max, 'UTF-8') : substr($v, 0, $max);
+    }
+    return $v;
+}
+
+function bg_page()
+{
+    $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
+    $size = isset($_GET['pageSize']) ? (int)$_GET['pageSize'] : 50;
+    if ($page < 1) {
+        $page = 1;
+    }
+    if ($size < 1) {
+        $size = 50;
+    }
+    if ($size > 200) {
+        $size = 200;
+    }
+    return array($page, $size, ($page - 1) * $size);
+}
+
+function bg_like($q)
+{
+    return '%' . str_replace(array('!', '%', '_'), array('!!', '!%', '!_'), (string)$q) . '%';
+}
+
+/* 多个字段 LIKE 关键词，参数以 position 自增命名，避免重复使用同名占位符 */
+function bg_like_any(&$params, $q, $cols, $prefix)
+{
+    if ($q === '') {
+        return '1=1';
+    }
+    $like = bg_like($q);
+    $parts = array();
+    foreach ($cols as $i => $col) {
+        $k = ':' . $prefix . $i;
+        $params[$k] = $like;
+        $parts[] = $col . " LIKE " . $k . " ESCAPE '!'";
+    }
+    return '(' . implode(' OR ', $parts) . ')';
+}
+
+function bg_date_where(&$params, $alias, $from, $to, $prefix = 'd')
+{
+    $parts = array();
+    if ($from !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $from)) {
+        $k = ':' . $prefix . '0';
+        $params[$k] = $from;
+        $parts[] = $alias . '.date >= ' . $k;
+    }
+    if ($to !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $to)) {
+        $k = ':' . $prefix . '1';
+        $params[$k] = $to;
+        $parts[] = $alias . '.date <= ' . $k;
+    }
+    return $parts;
+}
+
+/* 报工单关键词条件：单号 / 人员 / 订单号 / 明细里的图号、名称、订单号 */
+function bg_report_q_cond(&$params, $q)
+{
+    if ($q === '') {
+        return '1=1';
+    }
+    $cols = array('r.no', 'r.worker', 'r.order_no');
+    $parts = array();
+    foreach ($cols as $i => $col) {
+        $k = ':rq' . $i;
+        $params[$k] = bg_like($q);
+        $parts[] = $col . " LIKE " . $k . " ESCAPE '!'";
+    }
+    $itemParts = array();
+    foreach (array('ri2.part_no', 'ri2.part_name', 'ri2.order_no') as $i => $col) {
+        $k = ':riq' . $i;
+        $params[$k] = bg_like($q);
+        $itemParts[] = $col . " LIKE " . $k . " ESCAPE '!'";
+    }
+    $parts[] = 'EXISTS (SELECT 1 FROM report_items ri2 WHERE ri2.report_id = r.id AND (' . implode(' OR ', $itemParts) . '))';
+    return '(' . implode(' OR ', $parts) . ')';
+}
+
+/* 统计条件：日期 + 关键词 + 订单/零件多选 */
+function bg_stats_conds(&$params, $from, $to, $q, $orderIds, $partIds)
+{
+    $w = bg_date_where($params, 'r', $from, $to, 'sd');
+    if ($q !== '') {
+        $cols = array('r.no', 'r.worker', 'r.order_no', 'ri.order_no', 'ri.part_no', 'ri.part_name', 'ri.process');
+        $parts = array();
+        foreach ($cols as $i => $col) {
+            $k = ':sq' . $i;
+            $params[$k] = bg_like($q);
+            $parts[] = $col . " LIKE " . $k . " ESCAPE '!'";
+        }
+        $w[] = '(' . implode(' OR ', $parts) . ')';
+    }
+    if (count($orderIds)) {
+        $ph = array();
+        foreach ($orderIds as $i => $id) {
+            $k = ':so' . $i;
+            $params[$k] = $id;
+            $ph[] = $k;
+        }
+        $w[] = "COALESCE(NULLIF(ri.order_id, ''), r.order_id) IN (" . implode(',', $ph) . ')';
+    }
+    if (count($partIds)) {
+        $ph = array();
+        foreach ($partIds as $i => $id) {
+            $k = ':sp' . $i;
+            $params[$k] = $id;
+            $ph[] = $k;
+        }
+        $w[] = 'ri.part_id IN (' . implode(',', $ph) . ')';
+    }
+    return count($w) ? implode(' AND ', $w) : '1=1';
+}
+
+function bg_ids_param($key)
+{
+    $raw = bg_get($key, 8000);
+    if ($raw === '') {
+        return array();
+    }
+    $out = array();
+    foreach (explode(',', $raw) as $id) {
+        $id = trim($id);
+        if ($id !== '' && bg_len($id) <= 60) {
+            $out[] = $id;
+        }
+        if (count($out) >= 200) {
+            break;
+        }
+    }
+    return $out;
+}
+
+function bg_part_row($row)
+{
+    $processes = json_decode(isset($row['processes']) ? $row['processes'] : '[]', true);
+    if (!is_array($processes)) {
+        $processes = array();
+    }
+    $drawings = json_decode(isset($row['drawings']) ? $row['drawings'] : '[]', true);
+    if (!is_array($drawings)) {
+        $drawings = array();
+    }
+    return array(
+        'id' => $row['id'],
+        'no' => $row['no'],
+        'name' => isset($row['name']) ? $row['name'] : '',
+        'material' => isset($row['material']) ? $row['material'] : '',
+        'note' => isset($row['note']) ? $row['note'] : '',
+        'stock' => (float)$row['stock'],
+        'image' => isset($row['image']) ? $row['image'] : '',
+        'processes' => $processes,
+        'drawings' => $drawings,
+        'price' => count($processes) ? (float)$processes[0]['price'] : 0,
+        'createdAt' => isset($row['created_at']) ? $row['created_at'] : '',
+        'updatedAt' => isset($row['updated_at']) ? $row['updated_at'] : '',
+    );
+}
+
+function bg_order_row($row)
+{
+    return array(
+        'id' => $row['id'],
+        'no' => $row['no'],
+        'date' => $row['date'],
+        'partId' => $row['part_id'],
+        'partNo' => $row['part_no'],
+        'partName' => isset($row['part_name']) ? $row['part_name'] : '',
+        'process' => isset($row['process']) ? $row['process'] : '',
+        'qty' => (float)$row['qty'],
+        'note' => isset($row['note']) ? $row['note'] : '',
+        'createdAt' => isset($row['created_at']) ? $row['created_at'] : '',
+        'updatedAt' => isset($row['updated_at']) ? $row['updated_at'] : '',
+    );
+}
+
+function bg_item_row($row)
+{
+    return array(
+        'partId' => $row['part_id'],
+        'partNo' => $row['part_no'],
+        'partName' => $row['part_name'],
+        'process' => $row['process'],
+        'qty' => (float)$row['qty'],
+        'price' => (float)$row['price'],
+        'amount' => (float)$row['amount'],
+        'orderId' => $row['order_id'],
+        'orderNo' => $row['order_no'],
+    );
+}
+
+/* 一次取回多张报工单的明细，避免 JOIN 放大导致分页错位 */
+function bg_items_for($pdo, $ids)
+{
+    $out = array();
+    if (!count($ids)) {
+        return $out;
+    }
+    $ph = implode(',', array_fill(0, count($ids), '?'));
+    $stmt = $pdo->prepare('SELECT * FROM report_items WHERE report_id IN (' . $ph . ') ORDER BY report_id, sort, id');
+    $stmt->execute($ids);
+    foreach ($stmt as $row) {
+        $out[$row['report_id']][] = bg_item_row($row);
+    }
+    return $out;
+}
+
+function bg_parts_usage($pdo, $ids)
+{
+    $out = array();
+    if (!count($ids)) {
+        return $out;
+    }
+    $ph = implode(',', array_fill(0, count($ids), '?'));
+    $stmt = $pdo->prepare(
+        'SELECT part_id, COALESCE(SUM(qty), 0) AS qty, COUNT(*) AS times
+         FROM report_items WHERE part_id IN (' . $ph . ') GROUP BY part_id'
+    );
+    $stmt->execute($ids);
+    foreach ($stmt as $row) {
+        $out[$row['part_id']] = array('qty' => (float)$row['qty'], 'times' => (int)$row['times']);
+    }
+    return $out;
+}
+
+/* 订单已报量：旧数据明细没写 order_id 时归到报工单表头订单 */
+function bg_orders_usage($pdo, $ids, $excludeReportId = '')
+{
+    $out = array();
+    if (!count($ids)) {
+        return $out;
+    }
+    $ph = implode(',', array_fill(0, count($ids), '?'));
+    $params = $ids;
+    $sql = 'SELECT oid, SUM(qty) AS qty, SUM(amount) AS amount FROM (
+              SELECT COALESCE(NULLIF(ri.order_id, \'\'), r.order_id) AS oid, ri.qty AS qty, ri.amount AS amount
+              FROM report_items ri JOIN reports r ON r.id = ri.report_id
+              WHERE COALESCE(NULLIF(ri.order_id, \'\'), r.order_id) IN (' . $ph . ')';
+    if ($excludeReportId !== '') {
+        $sql .= ' AND r.id <> ?';
+        $params[] = $excludeReportId;
+    }
+    $sql .= ') GROUP BY oid';
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+    foreach ($stmt as $row) {
+        $out[$row['oid']] = array('qty' => (float)$row['qty'], 'amount' => (float)$row['amount']);
+    }
+    return $out;
+}
+
+function bg_bootstrap_counts($pdo)
+{
+    return array(
+        'parts' => (int)$pdo->query('SELECT COUNT(*) FROM parts')->fetchColumn(),
+        'orders' => (int)$pdo->query('SELECT COUNT(*) FROM orders')->fetchColumn(),
+        'reports' => (int)$pdo->query('SELECT COUNT(*) FROM reports')->fetchColumn(),
+        'items' => (int)$pdo->query('SELECT COUNT(*) FROM report_items')->fetchColumn(),
+    );
+}
+
+/* ---------------- 图号模糊匹配（与 v1.7 前端算法一致） ---------------- */
+
+function bg_norm_key($v)
+{
+    $s = str_replace(array('－', '—', '–', '‑', '　'), '-', (string)$v);
+    $s = preg_replace('/\s+/u', '', $s);
+    return strtoupper($s);
+}
+
+function bg_compact_key($v)
+{
+    return preg_replace('/[^0-9A-Z\x{4e00}-\x{9fa5}]/u', '', bg_norm_key($v));
+}
+
+function bg_slen($s)
+{
+    return function_exists('mb_strlen') ? mb_strlen($s, 'UTF-8') : strlen($s);
+}
+
+function bg_ssub($s, $start, $len)
+{
+    return function_exists('mb_substr') ? mb_substr($s, $start, $len, 'UTF-8') : substr($s, $start, $len);
+}
+
+function bg_strip_date($s)
+{
+    $s = preg_replace('/20\d{2}\s*[-\/年.]\s*\d{1,2}\s*[-\/月.]\s*\d{1,2}\s*日?/u', ' ', (string)$s);
+    return preg_replace('/(?<!\d)\d{1,2}\s*[-\/.]\s*\d{1,2}(?!\d)\s*日?/u', ' ', $s);
+}
+
+function bg_sim_key($a, $b)
+{
+    $A = preg_split('//u', (string)$a, -1, PREG_SPLIT_NO_EMPTY);
+    $B = preg_split('//u', (string)$b, -1, PREG_SPLIT_NO_EMPTY);
+    $m = count($A);
+    $n = count($B);
+    if (!$m || !$n) {
+        return 0;
+    }
+    $prev = range(0, $n);
+    for ($i = 1; $i <= $m; $i++) {
+        $cur = array($i);
+        for ($j = 1; $j <= $n; $j++) {
+            $cur[$j] = min($prev[$j] + 1, $cur[$j - 1] + 1, $prev[$j - 1] + ($A[$i - 1] === $B[$j - 1] ? 0 : 1));
+        }
+        $prev = $cur;
+    }
+    return 1 - $prev[$n] / max($m, $n);
+}
+
+/* 返回 [{part, score}]，按分数降序 */
+function bg_fuzzy_candidates($parts, $text, $limit = 5)
+{
+    $bare = bg_strip_date($text);
+    $raw = bg_norm_key($bare);
+    $flat = bg_compact_key($bare);
+    if ($raw === '') {
+        return array();
+    }
+    preg_match_all('/[0-9A-Z]{4,}/', $flat, $mm);
+    $runs = $mm[0];
+    $maxRun = 0;
+    foreach ($runs as $r) {
+        $maxRun = max($maxRun, strlen($r));
+    }
+    $longRuns = array();
+    foreach ($runs as $r) {
+        if (strlen($r) === $maxRun) {
+            $longRuns[] = $r;
+        }
+    }
+
+    $scored = array();
+    foreach ($parts as $p) {
+        $no = bg_norm_key(isset($p['no']) ? $p['no'] : '');
+        $noC = bg_compact_key(isset($p['no']) ? $p['no'] : '');
+        $nm = bg_norm_key(isset($p['name']) ? $p['name'] : '');
+        $score = 0;
+        if ($no !== '' && strpos($raw, $no) !== false) {
+            $score = 1;
+        } elseif (bg_slen($noC) >= 4 && strpos($flat, $noC) !== false) {
+            $score = 0.96;
+        } else {
+            foreach ($longRuns as $r) {
+                $rl = strlen($r);
+                if ($rl < 4) {
+                    continue;
+                }
+                $noLen = bg_slen($noC);
+                $lim = min($rl, $noLen);
+                for ($l = $lim; $l >= 4; $l--) {
+                    $pre = substr($r, 0, $l);
+                    if ($noLen >= $l && strpos($noC, $pre) !== false) {
+                        $score = max($score, 0.95);
+                        break;
+                    }
+                    if (strpos($pre, $noC) !== false) {
+                        $score = max($score, 0.93);
+                        break;
+                    }
+                }
+                if ($score < 0.9) {
+                    $sim = bg_sim_key($r, $noC);
+                    if ($sim >= 0.72) {
+                        $score = max($score, 0.8 + ($sim - 0.72) * 0.5);
+                    }
+                }
+            }
+            if (!$score && bg_slen($noC) >= 5) {
+                $len = bg_slen($noC);
+                $seg = 0;
+                $flatLen = bg_slen($flat);
+                for ($i = 0; $i + $len <= $flatLen; $i++) {
+                    $seg = max($seg, bg_sim_key(bg_ssub($flat, $i, $len), $noC));
+                }
+                if ($seg >= 0.75) {
+                    $score = 0.72 + ($seg - 0.75) * 0.5;
+                }
+            }
+        }
+        if (!$score && bg_slen($nm) >= 2 && strpos($raw, $nm) !== false) {
+            $score = 0.9;
+        }
+        if ($score > 0) {
+            $scored[] = array('part' => $p, 'score' => $score);
+        }
+    }
+    usort($scored, function ($a, $b) {
+        return $b['score'] <=> $a['score'];
+    });
+    return array_slice($scored, 0, $limit);
+}
+
+/* 先精确（归一化 / 去分隔符 / 名称），再模糊 */
+function bg_match_part($parts, $no, $name)
+{
+    $n = bg_norm_key($no);
+    $nm = bg_norm_key($name);
+    $hit = null;
+    foreach ($parts as $p) {
+        if ($n !== '' && bg_norm_key(isset($p['no']) ? $p['no'] : '') === $n) {
+            $hit = $p;
+            break;
+        }
+    }
+    if (!$hit && $n !== '') {
+        $nc = bg_compact_key($n);
+        foreach ($parts as $p) {
+            if ($nc !== '' && bg_compact_key(isset($p['no']) ? $p['no'] : '') === $nc) {
+                $hit = $p;
+                break;
+            }
+        }
+    }
+    if (!$hit && $nm !== '') {
+        foreach ($parts as $p) {
+            if (bg_norm_key(isset($p['name']) ? $p['name'] : '') === $nm) {
+                $hit = $p;
+                break;
+            }
+        }
+    }
+    if (!$hit && $n !== '') {
+        foreach ($parts as $p) {
+            if (isset($p['name']) && $p['name'] !== '' && bg_norm_key($p['name']) === $n) {
+                $hit = $p;
+                break;
+            }
+        }
+    }
+    if ($hit) {
+        return array('part' => $hit, 'score' => 1);
+    }
+    $fz = bg_fuzzy_candidates($parts, trim($no . ' ' . $name), 1);
+    return count($fz) ? $fz[0] : null;
+}
+
+function bg_all_parts_for_match($pdo)
+{
+    $out = array();
+    foreach ($pdo->query('SELECT * FROM parts ORDER BY updated_at DESC, id DESC') as $row) {
+        $out[] = bg_part_row($row);
+    }
+    return $out;
+}
+
 /* ================================================================ 路由 */
 
 $action = isset($_GET['action']) && is_string($_GET['action']) ? $_GET['action'] : '';
@@ -2235,6 +2835,503 @@ switch ($action) {
         ));
         break;
 
+    case 'bootstrap':
+        $pdo = bg_pdo();
+        $first = (string)$pdo->query('SELECT COALESCE(MIN(date), \'\') FROM reports')->fetchColumn();
+        bg_json(200, array(
+            'auth' => $APP_PASSWORD !== '',
+            'imageBase' => 'api.php?action=image&f=',
+            'counts' => bg_bootstrap_counts($pdo),
+            'firstDate' => $first,
+            'version' => '2.3',
+        ));
+        break;
+
+    case 'parts.list':
+        $pdo = bg_pdo();
+        $q = bg_get('q', 100);
+        list($page, $size, $offset) = bg_page();
+        $params = array();
+        $where = bg_like_any($params, $q, array('p.no', 'p.name', 'p.material'), 'pl');
+        $stmt = $pdo->prepare('SELECT COUNT(*) FROM parts p WHERE ' . $where);
+        $stmt->execute($params);
+        $total = (int)$stmt->fetchColumn();
+        $stmt = $pdo->prepare('SELECT p.* FROM parts p WHERE ' . $where . ' ORDER BY COALESCE(p.updated_at, \'\') DESC, p.id DESC LIMIT ' . $size . ' OFFSET ' . $offset);
+        $stmt->execute($params);
+        $items = array();
+        $ids = array();
+        foreach ($stmt as $row) {
+            $items[] = bg_part_row($row);
+            $ids[] = $row['id'];
+        }
+        $usage = bg_parts_usage($pdo, $ids);
+        foreach ($items as $i => $it) {
+            $items[$i]['usage'] = isset($usage[$it['id']]) ? $usage[$it['id']] : array('qty' => 0, 'times' => 0);
+        }
+        bg_json(200, array(
+            'ok' => true,
+            'items' => $items,
+            'total' => $total,
+            'page' => $page,
+            'pageSize' => $size,
+            'hasMore' => $offset + count($items) < $total,
+        ));
+        break;
+
+    case 'parts.search':
+        $pdo = bg_pdo();
+        $q = bg_get('q', 100);
+        $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 20;
+        if ($limit < 1) {
+            $limit = 20;
+        }
+        if ($limit > 50) {
+            $limit = 50;
+        }
+        $params = array();
+        $where = bg_like_any($params, $q, array('p.no', 'p.name', 'p.material'), 'ps');
+        $stmt = $pdo->prepare('SELECT p.* FROM parts p WHERE ' . $where . ' ORDER BY COALESCE(p.updated_at, \'\') DESC, p.id DESC LIMIT ' . $limit);
+        $stmt->execute($params);
+        $items = array();
+        foreach ($stmt as $row) {
+            $items[] = bg_part_row($row);
+        }
+        bg_json(200, array('ok' => true, 'items' => $items));
+        break;
+
+    case 'parts.get':
+        $pdo = bg_pdo();
+        $ids = bg_ids_param('ids');
+        $id = bg_get('id', 60);
+        if (!count($ids) && $id !== '') {
+            $ids = array($id);
+        }
+        if (!count($ids)) {
+            bg_fail(400, '缺少零件 id');
+        }
+        $ph = implode(',', array_fill(0, count($ids), '?'));
+        $stmt = $pdo->prepare('SELECT * FROM parts WHERE id IN (' . $ph . ')');
+        $stmt->execute($ids);
+        $items = array();
+        $got = array();
+        foreach ($stmt as $row) {
+            $items[] = bg_part_row($row);
+            $got[] = $row['id'];
+        }
+        $usage = bg_parts_usage($pdo, $got);
+        foreach ($items as $i => $it) {
+            $items[$i]['usage'] = isset($usage[$it['id']]) ? $usage[$it['id']] : array('qty' => 0, 'times' => 0);
+        }
+        if (isset($_GET['ids'])) {
+            bg_json(200, array('items' => $items));
+        }
+        if (!count($items)) {
+            bg_fail(404, '零件不存在');
+        }
+        bg_json(200, array('part' => $items[0]));
+        break;
+
+    case 'parts.match':
+        $pdo = bg_pdo();
+        $parts = bg_all_parts_for_match($pdo);
+        $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 5;
+        if ($limit < 1) {
+            $limit = 5;
+        }
+        if ($limit > 20) {
+            $limit = 20;
+        }
+        if ($method === 'POST') {
+            $body = bg_body();
+            $matches = array();
+            if (isset($body['queries']) && is_array($body['queries'])) {
+                foreach ($body['queries'] as $qq) {
+                    $no = is_array($qq) && isset($qq['no']) && is_scalar($qq['no']) ? trim((string)$qq['no']) : '';
+                    $name = is_array($qq) && isset($qq['name']) && is_scalar($qq['name']) ? trim((string)$qq['name']) : '';
+                    $matches[] = bg_match_part($parts, $no, $name);
+                }
+            } elseif (isset($body['texts']) && is_array($body['texts'])) {
+                foreach ($body['texts'] as $t) {
+                    $t = is_scalar($t) ? trim((string)$t) : '';
+                    $fz = bg_fuzzy_candidates($parts, $t, 1);
+                    $matches[] = count($fz) ? $fz[0] : null;
+                }
+            }
+            bg_json(200, array('ok' => true, 'matches' => $matches));
+        }
+        $no = bg_get('no', 100);
+        $name = bg_get('name', 100);
+        $text = bg_get('text', 300);
+        if ($no !== '' || $name !== '') {
+            bg_json(200, array(
+                'ok' => true,
+                'match' => bg_match_part($parts, $no, $name),
+                'candidates' => bg_fuzzy_candidates($parts, trim($no . ' ' . $name), $limit),
+            ));
+        }
+        bg_json(200, array(
+            'ok' => true,
+            'match' => null,
+            'candidates' => bg_fuzzy_candidates($parts, $text, $limit),
+        ));
+        break;
+
+    case 'orders.list':
+        $pdo = bg_pdo();
+        $q = bg_get('q', 100);
+        $from = bg_get('from', 10);
+        $to = bg_get('to', 10);
+        list($page, $size, $offset) = bg_page();
+        $params = array();
+        $w = bg_date_where($params, 'o', $from, $to, 'od');
+        $w[] = bg_like_any($params, $q, array('o.no', 'o.part_no', 'o.part_name', 'o.process', 'o.note'), 'oq');
+        $where = implode(' AND ', $w);
+        $stmt = $pdo->prepare('SELECT COUNT(*) FROM orders o WHERE ' . $where);
+        $stmt->execute($params);
+        $total = (int)$stmt->fetchColumn();
+        $stmt = $pdo->prepare(
+            'SELECT o.* FROM orders o WHERE ' . $where .
+            ' ORDER BY COALESCE(o.date, \'\') DESC, COALESCE(o.created_at, \'\') DESC, o.id DESC LIMIT ' . $size . ' OFFSET ' . $offset
+        );
+        $stmt->execute($params);
+        $items = array();
+        $ids = array();
+        foreach ($stmt as $row) {
+            $items[] = bg_order_row($row);
+            $ids[] = $row['id'];
+        }
+        $usage = bg_orders_usage($pdo, $ids);
+        foreach ($items as $i => $it) {
+            $u = isset($usage[$it['id']]) ? $usage[$it['id']] : array('qty' => 0, 'amount' => 0);
+            $items[$i]['reportedQty'] = $u['qty'];
+            $items[$i]['reportedAmount'] = $u['amount'];
+            $items[$i]['remaining'] = $it['qty'] - $u['qty'];
+        }
+        bg_json(200, array(
+            'ok' => true,
+            'items' => $items,
+            'total' => $total,
+            'page' => $page,
+            'pageSize' => $size,
+            'hasMore' => $offset + count($items) < $total,
+        ));
+        break;
+
+    case 'orders.search':
+        $pdo = bg_pdo();
+        $partId = bg_get('partId', 60);
+        $process = bg_get('process', 100);
+        $q = bg_get('q', 100);
+        $exclude = bg_get('excludeReportId', 60);
+        $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 50;
+        if ($limit < 1) {
+            $limit = 50;
+        }
+        if ($limit > 100) {
+            $limit = 100;
+        }
+        $params = array();
+        $w = array();
+        if ($partId !== '') {
+            $w[] = 'o.part_id = :pid';
+            $params[':pid'] = $partId;
+        }
+        if ($process !== '') {
+            $w[] = "(o.process = '' OR o.process = :proc)";
+            $params[':proc'] = $process;
+        }
+        $w[] = bg_like_any($params, $q, array('o.no', 'o.part_no', 'o.part_name', 'o.process', 'o.note'), 'os');
+        $where = implode(' AND ', $w);
+        $stmt = $pdo->prepare('SELECT COUNT(*) FROM orders o WHERE ' . $where);
+        $stmt->execute($params);
+        $total = (int)$stmt->fetchColumn();
+        $stmt = $pdo->prepare(
+            'SELECT o.* FROM orders o WHERE ' . $where .
+            ' ORDER BY COALESCE(o.date, \'\') DESC, COALESCE(o.created_at, \'\') DESC, o.id DESC LIMIT ' . $limit
+        );
+        $stmt->execute($params);
+        $items = array();
+        $ids = array();
+        foreach ($stmt as $row) {
+            $items[] = bg_order_row($row);
+            $ids[] = $row['id'];
+        }
+        $usage = bg_orders_usage($pdo, $ids, $exclude);
+        foreach ($items as $i => $it) {
+            $u = isset($usage[$it['id']]) ? $usage[$it['id']] : array('qty' => 0, 'amount' => 0);
+            $items[$i]['reportedQty'] = $u['qty'];
+            $items[$i]['reportedAmount'] = $u['amount'];
+            $items[$i]['remaining'] = $it['qty'] - $u['qty'];
+        }
+        bg_json(200, array('ok' => true, 'items' => $items, 'total' => $total));
+        break;
+
+    case 'orders.get':
+        $pdo = bg_pdo();
+        $id = bg_get('id', 60);
+        if ($id === '') {
+            bg_fail(400, '缺少订单 id');
+        }
+        $stmt = $pdo->prepare('SELECT * FROM orders WHERE id = ?');
+        $stmt->execute(array($id));
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$row) {
+            bg_fail(404, '订单不存在');
+        }
+        $order = bg_order_row($row);
+        $usage = bg_orders_usage($pdo, array($id));
+        $u = isset($usage[$id]) ? $usage[$id] : array('qty' => 0, 'amount' => 0);
+        $order['reportedQty'] = $u['qty'];
+        $order['reportedAmount'] = $u['amount'];
+        $order['remaining'] = $order['qty'] - $u['qty'];
+        bg_json(200, array('order' => $order));
+        break;
+
+    case 'reports.list':
+        $pdo = bg_pdo();
+        $q = bg_get('q', 100);
+        $from = bg_get('from', 10);
+        $to = bg_get('to', 10);
+        list($page, $size, $offset) = bg_page();
+        $params = array();
+        $w = bg_date_where($params, 'r', $from, $to, 'rd');
+        $w[] = bg_report_q_cond($params, $q);
+        $where = implode(' AND ', $w);
+        $stmt = $pdo->prepare('SELECT COUNT(*) FROM reports r WHERE ' . $where);
+        $stmt->execute($params);
+        $total = (int)$stmt->fetchColumn();
+        $stmt = $pdo->prepare(
+            'SELECT r.* FROM reports r WHERE ' . $where .
+            ' ORDER BY COALESCE(r.date, \'\') DESC, COALESCE(r.created_at, \'\') DESC, r.no DESC LIMIT ' . $size . ' OFFSET ' . $offset
+        );
+        $stmt->execute($params);
+        $reports = array();
+        $ids = array();
+        foreach ($stmt as $row) {
+            $reports[] = array(
+                'id' => $row['id'],
+                'no' => $row['no'],
+                'date' => $row['date'],
+                'worker' => $row['worker'],
+                'workshop' => isset($row['workshop']) ? $row['workshop'] : '',
+                'note' => isset($row['note']) ? $row['note'] : '',
+                'orderId' => $row['order_id'],
+                'orderNo' => $row['order_no'],
+                'images' => json_decode(isset($row['images']) ? $row['images'] : '[]', true),
+                'createdAt' => isset($row['created_at']) ? $row['created_at'] : '',
+                'updatedAt' => isset($row['updated_at']) ? $row['updated_at'] : '',
+                'items' => array(),
+            );
+            $ids[] = $row['id'];
+        }
+        $itemsMap = bg_items_for($pdo, $ids);
+        foreach ($reports as $i => $r) {
+            $reports[$i]['items'] = isset($itemsMap[$r['id']]) ? $itemsMap[$r['id']] : array();
+            if (!is_array($reports[$i]['images'])) {
+                $reports[$i]['images'] = array();
+            }
+        }
+        $stmt = $pdo->prepare(
+            'SELECT COALESCE(SUM(ri.qty), 0) AS qty, COALESCE(SUM(ri.amount), 0) AS amount
+             FROM reports r LEFT JOIN report_items ri ON ri.report_id = r.id WHERE ' . $where
+        );
+        $stmt->execute($params);
+        $sum = $stmt->fetch(PDO::FETCH_ASSOC);
+        bg_json(200, array(
+            'ok' => true,
+            'items' => $reports,
+            'total' => $total,
+            'page' => $page,
+            'pageSize' => $size,
+            'hasMore' => $offset + count($reports) < $total,
+            'summary' => array('count' => $total, 'qty' => (float)$sum['qty'], 'amount' => (float)$sum['amount']),
+        ));
+        break;
+
+    case 'reports.get':
+        $pdo = bg_pdo();
+        $id = bg_get('id', 60);
+        if ($id === '') {
+            bg_fail(400, '缺少报工单 id');
+        }
+        $stmt = $pdo->prepare('SELECT * FROM reports WHERE id = ?');
+        $stmt->execute(array($id));
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$row) {
+            bg_fail(404, '报工单不存在');
+        }
+        $itemsMap = bg_items_for($pdo, array($id));
+        $images = json_decode(isset($row['images']) ? $row['images'] : '[]', true);
+        bg_json(200, array(
+            'report' => array(
+                'id' => $row['id'],
+                'no' => $row['no'],
+                'date' => $row['date'],
+                'worker' => $row['worker'],
+                'workshop' => isset($row['workshop']) ? $row['workshop'] : '',
+                'note' => isset($row['note']) ? $row['note'] : '',
+                'orderId' => $row['order_id'],
+                'orderNo' => $row['order_no'],
+                'images' => is_array($images) ? $images : array(),
+                'items' => isset($itemsMap[$id]) ? $itemsMap[$id] : array(),
+                'createdAt' => isset($row['created_at']) ? $row['created_at'] : '',
+                'updatedAt' => isset($row['updated_at']) ? $row['updated_at'] : '',
+            ),
+        ));
+        break;
+
+    case 'stats.list':
+        $pdo = bg_pdo();
+        $from = bg_get('from', 10);
+        $to = bg_get('to', 10);
+        $q = bg_get('q', 100);
+        $orderIds = bg_ids_param('orderIds');
+        $partIds = bg_ids_param('partIds');
+        list($page, $size, $offset) = bg_page();
+        $params = array();
+        $where = bg_stats_conds($params, $from, $to, $q, $orderIds, $partIds);
+        $base = ' FROM reports r JOIN report_items ri ON ri.report_id = r.id'
+            . ' LEFT JOIN orders o ON o.id = COALESCE(NULLIF(ri.order_id, \'\'), r.order_id)'
+            . ' WHERE ' . $where;
+        $stmt = $pdo->prepare('SELECT COUNT(*) AS rows_count, COALESCE(SUM(ri.qty), 0) AS qty, COALESCE(SUM(ri.amount), 0) AS amount' . $base);
+        $stmt->execute($params);
+        $sum = $stmt->fetch(PDO::FETCH_ASSOC);
+        $stmt = $pdo->prepare(
+            'SELECT r.id AS report_id, r.no AS report_no, r.date, r.worker,'
+            . ' COALESCE(NULLIF(ri.order_no, \'\'), r.order_no) AS order_no, o.qty AS order_qty,'
+            . ' ri.part_no, ri.part_name, ri.process, ri.qty, ri.price, ri.amount, ri.sort, ri.id AS item_id'
+            . $base . ' ORDER BY COALESCE(r.date, \'\') DESC, r.no DESC, ri.sort, ri.id'
+            . ' LIMIT ' . $size . ' OFFSET ' . $offset
+        );
+        $stmt->execute($params);
+        $items = array();
+        foreach ($stmt as $row) {
+            $items[] = array(
+                'reportId' => $row['report_id'],
+                'date' => $row['date'],
+                'reportNo' => $row['report_no'],
+                'worker' => $row['worker'],
+                'orderNo' => $row['order_no'],
+                'orderQty' => $row['order_qty'] === null ? '' : (float)$row['order_qty'],
+                'partNo' => $row['part_no'],
+                'partName' => $row['part_name'],
+                'process' => $row['process'],
+                'qty' => (float)$row['qty'],
+                'price' => (float)$row['price'],
+                'amount' => (float)$row['amount'],
+            );
+        }
+        $rows = (int)$sum['rows_count'];
+        bg_json(200, array(
+            'ok' => true,
+            'items' => $items,
+            'total' => $rows,
+            'page' => $page,
+            'pageSize' => $size,
+            'hasMore' => $offset + count($items) < $rows,
+            'summary' => array('rows' => $rows, 'qty' => (float)$sum['qty'], 'amount' => (float)$sum['amount']),
+        ));
+        break;
+
+    case 'stats.overview':
+        $pdo = bg_pdo();
+        $first = (string)$pdo->query('SELECT COALESCE(MIN(date), \'\') FROM reports')->fetchColumn();
+        $years = array();
+        $stmt = $pdo->query(
+            'SELECT substr(r.date, 1, 4) AS year, COUNT(DISTINCT r.id) AS reports, COUNT(ri.id) AS items,'
+            . ' COALESCE(SUM(ri.qty), 0) AS qty, COALESCE(SUM(ri.amount), 0) AS amount'
+            . ' FROM reports r LEFT JOIN report_items ri ON ri.report_id = r.id'
+            . ' WHERE r.date <> \'\' GROUP BY year ORDER BY year DESC'
+        );
+        foreach ($stmt as $row) {
+            $years[] = array(
+                'year' => $row['year'],
+                'reports' => (int)$row['reports'],
+                'items' => (int)$row['items'],
+                'qty' => (float)$row['qty'],
+                'amount' => (float)$row['amount'],
+            );
+        }
+        bg_json(200, array(
+            'counts' => bg_bootstrap_counts($pdo),
+            'firstDate' => $first,
+            'years' => $years,
+        ));
+        break;
+
+    case 'export.parts':
+        $pdo = bg_pdo();
+        $q = bg_get('q', 100);
+        $params = array();
+        $where = bg_like_any($params, $q, array('p.no', 'p.name', 'p.material'), 'ep');
+        $stmt = $pdo->prepare('SELECT p.* FROM parts p WHERE ' . $where . ' ORDER BY COALESCE(p.updated_at, \'\') DESC, p.id DESC');
+        $stmt->execute($params);
+        $head = array('零件图号', '零件名称', '材料', '库存数量', '备注');
+        for ($i = 1; $i <= 9; $i++) {
+            $head[] = '工序' . $i;
+            $head[] = '工序说明' . $i;
+            $head[] = '单价' . $i;
+        }
+        $lines = array(implode(',', array_map('bg_csv_cell', $head)));
+        foreach ($stmt as $row) {
+            $p = bg_part_row($row);
+            $ps = isset($p['processes']) && is_array($p['processes']) ? $p['processes'] : array();
+            $line = array($p['no'], $p['name'], $p['material'], $p['stock'], $p['note']);
+            for ($i = 0; $i < 9; $i++) {
+                $x = isset($ps[$i]) ? $ps[$i] : null;
+                $line[] = $x ? (isset($x['name']) ? $x['name'] : '') : '';
+                $line[] = $x ? (isset($x['desc']) ? $x['desc'] : '') : '';
+                $line[] = $x ? (isset($x['price']) ? $x['price'] : '') : '';
+            }
+            $lines[] = implode(',', array_map('bg_csv_cell', $line));
+        }
+        header('Content-Type: text/csv; charset=utf-8');
+        header('Content-Disposition: attachment; filename="parts.csv"; filename*=UTF-8\'\'' . rawurlencode('零件列表_' . date('Y-m-d') . '.csv'));
+        header('Cache-Control: no-store');
+        echo "\xEF\xBB\xBF" . implode("\r\n", $lines) . "\r\n";
+        exit;
+
+    case 'export.stats':
+        $pdo = bg_pdo();
+        $from = bg_get('from', 10);
+        $to = bg_get('to', 10);
+        $q = bg_get('q', 100);
+        $orderIds = bg_ids_param('orderIds');
+        $partIds = bg_ids_param('partIds');
+        $params = array();
+        $where = bg_stats_conds($params, $from, $to, $q, $orderIds, $partIds);
+        $stmt = $pdo->prepare(
+            'SELECT r.no AS report_no, r.date, COALESCE(NULLIF(ri.order_no, \'\'), r.order_no) AS order_no,'
+            . ' o.qty AS order_qty, r.worker, ri.part_no, ri.part_name, ri.process, ri.qty, ri.price, ri.amount'
+            . ' FROM reports r JOIN report_items ri ON ri.report_id = r.id'
+            . ' LEFT JOIN orders o ON o.id = COALESCE(NULLIF(ri.order_id, \'\'), r.order_id)'
+            . ' WHERE ' . $where . ' ORDER BY COALESCE(r.date, \'\') DESC, r.no DESC, ri.sort, ri.id'
+        );
+        $stmt->execute($params);
+        $lines = array('日期,报工单号,订单号,订单数量,报工人,零件图号,零件名称,工序,数量,单价(元),金额(元)');
+        foreach ($stmt as $row) {
+            $lines[] = implode(',', array_map('bg_csv_cell', array(
+                $row['date'],
+                $row['report_no'],
+                $row['order_no'],
+                $row['order_qty'] === null ? '' : $row['order_qty'],
+                $row['worker'],
+                $row['part_no'],
+                $row['part_name'],
+                $row['process'],
+                $row['qty'],
+                $row['price'],
+                $row['amount'],
+            )));
+        }
+        $label = ($from !== '' ? $from : '全部') . '_' . ($to !== '' ? $to : '全部');
+        header('Content-Type: text/csv; charset=utf-8');
+        header('Content-Disposition: attachment; filename="stats.csv"; filename*=UTF-8\'\'' . rawurlencode('报工统计_' . $label . '.csv'));
+        header('Cache-Control: no-store');
+        echo "\xEF\xBB\xBF" . implode("\r\n", $lines) . "\r\n";
+        exit;
+
+
     case 'plugins.list':
         $list = array();
         foreach (bg_plugin_all() as $m) {
@@ -2344,6 +3441,10 @@ switch ($action) {
         if (isset($in['image']) && is_string($in['image']) && strpos($in['image'], 'data:') === 0) {
             $part['image'] = bg_image_save('parts', bg_part_image_base($part), $in['image'], $part['id']);
         }
+        $newDrawings = isset($body['newDrawings']) && is_array($body['newDrawings']) ? array_slice($body['newDrawings'], 0, 20) : array();
+        foreach ($newDrawings as $nd) {
+            $part['drawings'][] = bg_drawing_save($part, isset($nd['data']) ? $nd['data'] : '');
+        }
         $db['parts'][] = $part;
         bg_db_save($db);
         bg_json(200, array('part' => $part));
@@ -2384,6 +3485,26 @@ switch ($action) {
         } elseif ($part['image'] !== '') {
             $part['image'] = bg_part_image_rename($part, $part['image']);
         }
+        /* 图纸：删除被移除的物理文件，保存新增图纸，零件改名时同步文件名 */
+        $oldDrawings = isset($existing['drawings']) && is_array($existing['drawings']) ? $existing['drawings'] : array();
+        $keptPaths = array();
+        foreach ($part['drawings'] as $d) {
+            $keptPaths[] = $d['path'];
+        }
+        foreach ($oldDrawings as $od) {
+            $oldPath = bg_image_name(isset($od['path']) ? $od['path'] : '');
+            if ($oldPath !== '' && !in_array($oldPath, $keptPaths, true)) {
+                bg_image_remove($oldPath);
+            }
+        }
+        $newDrawings = isset($body['newDrawings']) && is_array($body['newDrawings']) ? array_slice($body['newDrawings'], 0, 20) : array();
+        foreach ($newDrawings as $nd) {
+            $part['drawings'][] = bg_drawing_save($part, isset($nd['data']) ? $nd['data'] : '');
+        }
+        $oldName = isset($existing['name']) ? (string)$existing['name'] : '';
+        if ($oldName !== (string)$part['name'] || (isset($existing['no']) ? $existing['no'] : '') !== $part['no']) {
+            $part['drawings'] = bg_drawings_rename($part['drawings'], $part);
+        }
         $db['parts'][$target] = $part;
         bg_db_save($db);
         bg_json(200, array('part' => $part));
@@ -2403,9 +3524,53 @@ switch ($action) {
             bg_fail(404, '零件不存在');
         }
         bg_image_remove(isset($db['parts'][$target]['image']) ? $db['parts'][$target]['image'] : '');
+        $drawings = isset($db['parts'][$target]['drawings']) && is_array($db['parts'][$target]['drawings']) ? $db['parts'][$target]['drawings'] : array();
+        foreach ($drawings as $d) {
+            bg_image_remove(isset($d['path']) ? $d['path'] : '');
+        }
         array_splice($db['parts'], $target, 1);
         bg_db_save($db);
         bg_json(200, array('ok' => true));
+        break;
+
+    case 'part.drawing.remove':
+        if ($method !== 'POST') {
+            bg_fail(405, '请求方法不支持');
+        }
+        $id = isset($_GET['id']) && is_string($_GET['id']) ? $_GET['id'] : '';
+        $body = bg_body();
+        $path = bg_image_name(isset($body['path']) ? $body['path'] : '');
+        if ($path === '' || strpos($path, 'drawings/') !== 0) {
+            bg_fail(400, '图纸路径不正确');
+        }
+        $db = bg_db_load();
+        $target = -1;
+        foreach ($db['parts'] as $i => $p) {
+            if (isset($p['id']) && $p['id'] === $id) {
+                $target = $i;
+                break;
+            }
+        }
+        if ($target < 0) {
+            bg_fail(404, '零件不存在');
+        }
+        $left = array();
+        $found = false;
+        foreach ($db['parts'][$target]['drawings'] as $d) {
+            if (isset($d['path']) && $d['path'] === $path) {
+                $found = true;
+                continue;
+            }
+            $left[] = $d;
+        }
+        if (!$found) {
+            bg_fail(404, '图纸不存在');
+        }
+        bg_image_remove($path);
+        $db['parts'][$target]['drawings'] = $left;
+        $db['parts'][$target]['updatedAt'] = gmdate('Y-m-d\TH:i:s\Z');
+        bg_db_save($db);
+        bg_json(200, array('part' => $db['parts'][$target]));
         break;
 
     case 'part.stock':
@@ -2653,41 +3818,52 @@ switch ($action) {
         break;
 
     case 'export.csv':
-        $db = bg_db_load();
-        $month = isset($_GET['month']) && is_string($_GET['month']) ? $_GET['month'] : '';
-        $from = isset($_GET['from']) && is_string($_GET['from']) ? $_GET['from'] : '';
-        $to = isset($_GET['to']) && is_string($_GET['to']) ? $_GET['to'] : '';
-        $q = isset($_GET['q']) && is_string($_GET['q']) ? $_GET['q'] : '';
-        $list = bg_sorted($db['reports']);
+        $pdo = bg_pdo();
+        $month = bg_get('month', 7);
+        $from = bg_get('from', 10);
+        $to = bg_get('to', 10);
+        $q = bg_get('q', 100);
+        $params = array();
+        $w = bg_date_where($params, 'r', $from, $to, 'ed');
+        if ($month !== '' && preg_match('/^\d{4}-\d{2}$/', $month)) {
+            $w[] = 'r.date LIKE :emonth';
+            $params[':emonth'] = $month . '%';
+        }
+        $w[] = bg_report_q_cond($params, $q);
+        $where = implode(' AND ', $w);
+        $stmt = $pdo->prepare(
+            'SELECT r.* FROM reports r WHERE ' . $where .
+            ' ORDER BY COALESCE(r.date, \'\') DESC, COALESCE(r.created_at, \'\') DESC, r.no DESC'
+        );
+        $stmt->execute($params);
         $filtered = array();
-        foreach ($list as $r) {
-            $date = isset($r['date']) ? (string)$r['date'] : '';
-            if ($month !== '' && preg_match('/^\d{4}-\d{2}$/', $month) && strpos($date, $month) !== 0) {
-                continue;
-            }
-            if ($from !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $from) && $date < $from) {
-                continue;
-            }
-            if ($to !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $to) && $date > $to) {
-                continue;
-            }
-            if ($q !== '') {
-                $hay = (isset($r['no']) ? $r['no'] : '') . ' ' . (isset($r['worker']) ? $r['worker'] : '') . ' ' . (isset($r['orderNo']) ? $r['orderNo'] : '');
-                $items = isset($r['items']) && is_array($r['items']) ? $r['items'] : array();
-                foreach ($items as $it) {
-                    $hay .= ' ' . (isset($it['partNo']) ? $it['partNo'] : '') . ' ' . (isset($it['partName']) ? $it['partName'] : '') . ' ' . (isset($it['orderNo']) ? $it['orderNo'] : '');
-                }
-                if (stripos($hay, $q) === false) {
-                    continue;
-                }
-            }
-            $filtered[] = $r;
+        $ids = array();
+        foreach ($stmt as $row) {
+            $images = json_decode(isset($row['images']) ? $row['images'] : '[]', true);
+            $filtered[$row['id']] = array(
+                'id' => $row['id'],
+                'no' => $row['no'],
+                'date' => $row['date'],
+                'worker' => $row['worker'],
+                'workshop' => isset($row['workshop']) ? $row['workshop'] : '',
+                'note' => isset($row['note']) ? $row['note'] : '',
+                'orderId' => $row['order_id'],
+                'orderNo' => $row['order_no'],
+                'items' => array(),
+            );
+            $ids[] = $row['id'];
+        }
+        $itemsMap = bg_items_for($pdo, $ids);
+        $reports = array();
+        foreach ($filtered as $id => $r) {
+            $r['items'] = isset($itemsMap[$id]) ? $itemsMap[$id] : array();
+            $reports[] = $r;
         }
         $label = $month !== '' ? $month : '全部';
         header('Content-Type: text/csv; charset=utf-8');
         header('Content-Disposition: attachment; filename="baogong.csv"; filename*=UTF-8\'\'' . rawurlencode('报工明细_' . $label . '.csv'));
         header('Cache-Control: no-store');
-        echo bg_csv($filtered);
+        echo bg_csv($reports);
         exit;
 
     case 'export.json':
@@ -2745,7 +3921,7 @@ switch ($action) {
             bg_fail(404, '图片不存在');
         }
         $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
-        $types = array('jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'png' => 'image/png', 'webp' => 'image/webp');
+        $types = array('jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'png' => 'image/png', 'webp' => 'image/webp', 'pdf' => 'application/pdf');
         header('Content-Type: ' . $types[$ext]);
         header('Content-Length: ' . filesize($path));
         header('Cache-Control: public, max-age=31536000, immutable');

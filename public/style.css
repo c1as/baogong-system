@@ -617,15 +617,20 @@ svg {
 }
 
 .part-thumb {
-  width: 54px;
-  height: 54px;
+  width: 78px;
+  height: 78px;
   flex: none;
+  padding: 0;
+  border: 0;
+  font: inherit;
+  appearance: none;
   border-radius: 12px;
   background: #f1f5f9;
   overflow: hidden;
   display: grid;
   place-items: center;
   color: #b3c0d1;
+  cursor: zoom-in;
 }
 
 .part-thumb img {
@@ -633,6 +638,16 @@ svg {
   height: 100%;
   object-fit: cover;
   display: block;
+  transition: transform 0.18s ease;
+}
+
+.part-thumb:hover img {
+  transform: scale(1.06);
+}
+
+.part-thumb:focus-visible {
+  outline: 2px solid #93b4f8;
+  outline-offset: 2px;
 }
 
 .part-main {
@@ -711,8 +726,15 @@ svg {
 
 .part-actions {
   display: flex;
-  gap: 2px;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
   flex: none;
+}
+
+.pa-btns {
+  display: flex;
+  gap: 2px;
 }
 
 /* ------------------------------------------------------------------ 鎶ュ伐璁板綍 */
@@ -1740,8 +1762,8 @@ svg {
   }
 
   .part-thumb {
-    width: 48px;
-    height: 48px;
+    width: 62px;
+    height: 62px;
   }
 
   .part-price {
@@ -1825,6 +1847,26 @@ svg {
   flex-wrap: wrap;
   gap: 5px;
   margin-top: 6px;
+}
+
+.proc-chips-with-desc {
+  gap: 7px;
+}
+
+.pu {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  max-width: 100%;
+}
+
+.pu-desc {
+  font-size: 11px;
+  line-height: 1.4;
+  color: #6b7a90;
+  padding-left: 2px;
+  word-break: break-word;
 }
 
 .chip {
@@ -1912,7 +1954,7 @@ svg {
 
 .proc-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 150px 34px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr) 110px 34px;
   gap: 8px;
   align-items: center;
 }
@@ -3127,5 +3169,222 @@ svg {
   .check-row em {
     margin-left: 16px;
     width: 100%;
+  }
+}
+
+/* ============================== v2.3 工序说明 / 零件图纸 ============================== */
+
+.pdc {
+  margin: -2px 0 12px;
+}
+
+.pdc-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 12px;
+  border: 1px solid #e7edf6;
+  border-radius: 0 0 12px 12px;
+  background: #fbfcff;
+  color: #475569;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.pdc-t-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pdc-hint {
+  color: var(--faint);
+  font-weight: 400;
+}
+
+.pdc-caret {
+  color: #94a3b8;
+  transition: transform 0.18s ease;
+}
+
+.pdc.open .pdc-caret {
+  transform: rotate(180deg);
+}
+
+.pdc-panel {
+  display: none;
+  padding: 10px 12px 12px;
+  border: 1px solid #e7edf6;
+  border-top: 0;
+  border-radius: 0 0 12px 12px;
+  background: #fff;
+}
+
+.pdc.open .pdc-panel {
+  display: block;
+}
+
+.pdc-row {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 10px;
+  padding: 6px 0;
+  border-top: 1px dashed #edf1f7;
+  font-size: 12.5px;
+}
+
+.pdc-row:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.pdc-proc {
+  color: #1d4ed8;
+  font-weight: 600;
+}
+
+.pdc-desc {
+  color: #475569;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.drawing-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 10px;
+  margin-right: 0;
+  border: 1px solid #d8e3f2;
+  border-radius: 9px;
+  background: #f7faff;
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.drawing-btn:hover {
+  background: #eef5ff;
+  border-color: #bcd3f5;
+}
+
+.drawing-box {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line-2);
+}
+
+.drawing-list {
+  display: grid;
+  gap: 8px;
+}
+
+.drawing-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid #e6ecf5;
+  border-radius: 10px;
+  background: #fbfcfe;
+}
+
+.dthumb {
+  width: 42px;
+  height: 42px;
+  flex: none;
+  border-radius: 7px;
+  object-fit: cover;
+  background: #eef2f8;
+}
+
+.dthumb.pdf {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: #dc2626;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+}
+
+.dname {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  color: #334155;
+}
+
+.dtype {
+  flex: none;
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.drawing-modal-list {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+  max-height: 50vh;
+  overflow: auto;
+}
+
+.drawing-preview {
+  margin: 6px 0 14px;
+  text-align: center;
+}
+
+.drawing-preview img {
+  max-width: 100%;
+  max-height: 52vh;
+  border-radius: 10px;
+  border: 1px solid var(--line-2);
+}
+
+.part-zoom {
+  margin: 10px 0 16px;
+  text-align: center;
+}
+
+.part-zoom img {
+  max-width: 100%;
+  max-height: 68vh;
+  border-radius: 12px;
+  border: 1px solid var(--line-2);
+  background: #f8fafc;
+}
+
+@media (max-width: 640px) {
+  .proc-row {
+    grid-template-columns: minmax(0, 1fr) 34px;
+  }
+
+  .proc-row [data-proc="name"] {
+    grid-column: 1 / 2;
+  }
+
+  .proc-row [data-proc="desc"] {
+    grid-column: 1 / 2;
+  }
+
+  .proc-row .num {
+    grid-column: 1 / 2;
+  }
+
+  .proc-row [data-proc-del] {
+    grid-column: 2 / 3;
+    grid-row: 1 / 4;
+  }
+
+  .pdc-row {
+    grid-template-columns: 72px minmax(0, 1fr);
   }
 }

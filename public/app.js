@@ -191,25 +191,51 @@ function imgUrl(name) {
 }
 
 const state = {
-  parts: [],
-  reports: [],
-  orders: [],
   plugins: [],
   auth: false,
   imageBase: '/img/',
+  counts: { parts: 0, orders: 0, reports: 0, items: 0 },
+  firstDate: '',
 };
 
+/* 远程数据：零件对象按 id 缓存，供工序、名称、单价回显 */
+const partCache = new Map();
+
+function cachePart(p) {
+  if (p && p.id) partCache.set(p.id, p);
+  return p;
+}
+
+async function fetchParts(ids) {
+  const list = Array.from(new Set((ids || []).filter(Boolean)));
+  const missing = list.filter((id) => !partCache.has(id));
+  if (missing.length) {
+    const data = await api('GET', 'api.php?action=parts.get&ids=' + encodeURIComponent(missing.join(',')));
+    (data.items || []).forEach(cachePart);
+  }
+  return list.map((id) => partCache.get(id)).filter(Boolean);
+}
+
+function newStore() {
+  return { items: [], total: 0, page: 0, hasMore: false, loading: false, seq: 0 };
+}
+
 let partQuery = '';
-let partLimit = 100;
+let partStore = newStore();
+let orderQuery = '';
+let orderStore = newStore();
+let orderRange = { key: 'all', from: '', to: '' };
 let reportQuery = '';
-let reportLimit = 50;
+let reportStore = newStore();
 let reportRange = { key: 'month', from: '', to: '' };
 
 let statRange = { key: 'month', from: '', to: '' };
 let statOrderIds = new Set();
 let statPartIds = new Set();
+let statOrderLabels = new Map();
+let statPartLabels = new Map();
 let statQuery = '';
-let statLimit = 100;
+let statStore = newStore();
 
 /* ==================================================================== 图标 */
 
@@ -276,59 +302,16 @@ function reportOrderLabel(r) {
   return r.orderNo ? `订单 ${r.orderNo}` : '未关联订单';
 }
 
-let orderUsageCache = null;
-
-function ensureOrderUsage() {
-  if (orderUsageCache) return orderUsageCache;
-  const map = new Map();
-  for (const r of state.reports) {
-    for (const it of r.items || []) {
-      const oid = it.orderId || r.orderId;
-      if (!oid) continue;
-      const u = map.get(oid) || { qty: 0, amount: 0 };
-      u.qty += Number(it.qty) || 0;
-      u.amount += Number(it.amount) || 0;
-      map.set(oid, u);
-    }
-  }
-  orderUsageCache = map;
-  return map;
-}
-
-function orderUsedQty(orderId, excludeReportId) {
-  const base = ensureOrderUsage().get(orderId) || { qty: 0, amount: 0 };
-  if (!excludeReportId) return { qty: round2(base.qty), amount: round2(base.amount) };
-
-  let qty = 0;
-  let amount = 0;
-  const report = state.reports.find((r) => r.id === excludeReportId);
-  if (report) {
-    for (const it of report.items || []) {
-      if ((it.orderId || report.orderId) !== orderId) continue;
-      qty += Number(it.qty) || 0;
-      amount += Number(it.amount) || 0;
-    }
-  }
-  return { qty: round2(base.qty - qty), amount: round2(base.amount - amount) };
-}
-
-function orderRemaining(order, excludeReportId) {
-  if (!order) return 0;
-  return round2(Number(order.qty) - orderUsedQty(order.id, excludeReportId).qty);
-}
-
+/* 订单已报数量 / 剩余由服务端计算，可直接取用 */
 function orderReported(order) {
   if (!order) return { qty: 0, amount: 0 };
-  return orderUsedQty(order.id);
+  return { qty: Number(order.reportedQty) || 0, amount: Number(order.reportedAmount) || 0 };
 }
 
-function matchingOrders(part, process) {
-  if (!part) return [];
-  return state.orders.filter((o) => {
-    if (o.partId !== part.id) return false;
-    if (o.process && process && o.process !== process) return false;
-    return true;
-  });
+function orderRemaining(order) {
+  if (!order) return 0;
+  if (order.remaining !== undefined) return round2(order.remaining);
+  return round2((Number(order.qty) || 0) - orderReported(order).qty);
 }
 
 /* ==================================================================== 接口 */
@@ -367,13 +350,12 @@ async function api(method, url, body) {
 }
 
 async function refreshState() {
-  const data = await api('GET', 'api.php?action=state');
-  state.parts = data.parts || [];
-  state.reports = data.reports || [];
-  state.orders = data.orders || [];
+  const data = await api('GET', 'api.php?action=bootstrap');
   state.auth = !!data.auth;
   state.imageBase = data.imageBase || '/img/';
-  orderUsageCache = null;
+  state.counts = data.counts || { parts: 0, orders: 0, reports: 0, items: 0 };
+  state.firstDate = data.firstDate || '';
+  partCache.clear();
 }
 
 async function refreshPlugins() {
@@ -427,7 +409,7 @@ function renderShell() {
         <button class="side-btn" data-action="backup">${icon('database', 16)}数据备份</button>
         <a class="side-btn" href="#/settings">${icon('settings', 16)}识别插件设置</a>
         ${state.auth ? `<button class="side-btn" data-action="logout">${icon('logout', 16)}退出登录</button>` : ''}
-        <div class="side-ver">v2.1 · 数据保存在服务器</div>
+        <div class="side-ver">v2.3 · 数据保存在服务器</div>
       </div>
     </aside>
 
@@ -593,17 +575,15 @@ function setupCombo(combo, onPick, onInput) {
   const menu = combo.querySelector('.combo-menu');
   let matches = [];
   let active = -1;
+  let seq = 0;
 
-  function draw(filter) {
-    const q = String(filter || '').trim().toLowerCase();
-    matches = state.parts
-      .filter((p) => !q || `${p.name || ''} ${p.no} ${p.material || ''}`.toLowerCase().includes(q))
-      .slice(0, 60);
-
-    if (!state.parts.length) {
-      menu.innerHTML = `<div class="combo-empty">还没有零件，<a href="#/parts/new" style="color:var(--brand)">去新增零件 →</a></div>`;
+  function paint(loading) {
+    if (loading && !matches.length) {
+      menu.innerHTML = '<div class="combo-empty">搜索中…</div>';
     } else if (!matches.length) {
-      menu.innerHTML = `<div class="combo-empty">没有匹配的零件</div>`;
+      menu.innerHTML = state.counts.parts
+        ? '<div class="combo-empty">没有匹配的零件</div>'
+        : '<div class="combo-empty">还没有零件，<a href="#/parts/new" style="color:var(--brand)">去新增零件 →</a></div>';
     } else {
       menu.innerHTML = matches
         .map(
@@ -619,6 +599,24 @@ function setupCombo(combo, onPick, onInput) {
     menu.hidden = false;
     active = matches.length ? 0 : -1;
     highlight();
+  }
+
+  async function draw(filter) {
+    const my = ++seq;
+    paint(true);
+    try {
+      const data = await api(
+        'GET',
+        'api.php?action=parts.search&limit=40&q=' + encodeURIComponent(String(filter || '').trim())
+      );
+      if (my !== seq) return;
+      matches = (data.items || []).map(cachePart);
+    } catch (err) {
+      if (my !== seq) return;
+      matches = [];
+      if (err.status === 401) return;
+    }
+    paint(false);
   }
 
   function highlight() {
@@ -758,33 +756,20 @@ async function compressImage(file) {
 
 /* ==================================================================== 零件列表 */
 
-function buildUsage() {
-  const map = new Map();
-  for (const r of state.reports) {
-    for (const it of r.items || []) {
-      const u = map.get(it.partId) || { qty: 0, times: 0 };
-      u.qty += Number(it.qty) || 0;
-      u.times += 1;
-      map.set(it.partId, u);
-    }
-  }
-  return map;
-}
-
-let usageCache = new Map();
-
 function viewParts() {
   setHead(
     '零件列表',
-    state.parts.length ? `共 ${state.parts.length} 个零件 · 每个零件可设置多道工序和单价` : '先添加零件，再开始报工',
+    '每个零件可设置多道工序和单价',
     `<div class="search">${icon('search', 16)}<input class="input" id="partSearch" placeholder="搜索图号 / 名称 / 材料" value="${esc(partQuery)}" autocomplete="off"></div>
      <button class="btn btn-ghost" data-action="parts-import">${icon('upload', 16)}导入</button>
      <button class="btn btn-ghost" data-action="parts-export">${icon('download', 16)}导出</button>
      <button class="btn btn-primary" data-action="new-part">${icon('plus', 16)}新增零件</button>`
   );
 
+  partStore = newStore();
   const view = $('#view');
-  if (!state.parts.length) {
+  if (!state.counts.parts) {
+    $('#pageSub').textContent = '先添加零件，再开始报工';
     view.innerHTML = emptyState(
       'box',
       '还没有零件',
@@ -795,27 +780,61 @@ function viewParts() {
     return;
   }
 
-  usageCache = buildUsage();
   view.innerHTML = `<div class="part-list" id="partList"></div>`;
-  renderPartRows();
+  loadParts(true);
 
   $('#partSearch').addEventListener(
     'input',
     debounce((e) => {
       partQuery = e.target.value;
-      partLimit = 100;
-      renderPartRows();
+      loadParts(true);
     })
   );
+}
+
+async function loadParts(reset) {
+  const box = $('#partList');
+  if (!box) return;
+  if (reset) {
+    partStore.items = [];
+    partStore.page = 0;
+    partStore.total = 0;
+    partStore.hasMore = false;
+    box.innerHTML = '<div class="empty" style="padding:40px 20px"><p>加载中…</p></div>';
+  }
+  const my = ++partStore.seq;
+  try {
+    const params = new URLSearchParams({
+      page: String(partStore.page + 1),
+      pageSize: '100',
+      q: partQuery.trim(),
+    });
+    const data = await api('GET', 'api.php?action=parts.list&' + params.toString());
+    if (my !== partStore.seq) return;
+    const list = (data.items || []).map(cachePart);
+    partStore.items = reset ? list : partStore.items.concat(list);
+    partStore.total = Number(data.total) || 0;
+    partStore.page = Number(data.page) || 1;
+    partStore.hasMore = !!data.hasMore;
+    renderPartRows();
+  } catch (err) {
+    if (my !== partStore.seq) return;
+    if (err.status !== 401) toast(err.message, 'err');
+    if (reset) {
+      box.innerHTML = `<div class="empty" style="padding:40px 20px"><h3>读取零件失败</h3><p>${esc(
+        err.message || '请稍后重试'
+      )}</p></div>`;
+    }
+  }
 }
 
 function renderPartRows() {
   const box = $('#partList');
   if (!box) return;
-  const q = partQuery.trim().toLowerCase();
-  const list = state.parts
-    .filter((p) => !q || [p.no, p.name, p.material].some((v) => String(v || '').toLowerCase().includes(q)))
-    .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+  const list = partStore.items;
+  $('#pageSub').textContent = `显示 ${fmtQty(list.length)} / ${fmtQty(partStore.total)} 个零件（共 ${fmtQty(
+    state.counts.parts
+  )} 个）`;
 
   if (!list.length) {
     box.innerHTML = `<div class="empty" style="padding:40px 20px">
@@ -824,54 +843,60 @@ function renderPartRows() {
     return;
   }
 
-  const shown = list.slice(0, partLimit);
-
-  box.innerHTML = shown
-    .map((p) => {
-      const u = usageCache.get(p.id) || { qty: 0, times: 0 };
-      const ps = partProcesses(p);
-      const chips = ps.length
-        ? ps
-            .map(
-              (x) =>
-                `<span class="chip">${esc(x.name || '工序')}<b>${money(x.price)}</b></span>`
-            )
-            .join('')
-        : '<span class="chip muted">未设置工序</span>';
-      const metaBits = [];
-      if (p.material) metaBits.push(esc(p.material));
-      if (u.times) {
-        metaBits.push(`<span class="meta-usage">${p.material ? ' · ' : ''}已报 ${fmtQty(u.qty)} 件</span>`);
-      }
-      const meta = metaBits.join('');
-      return `<div class="part-row">
-        <div class="part-thumb">${p.image ? `<img src="${esc(imgUrl(p.image))}" alt="" loading="lazy">` : icon('image', 22)}</div>
+  box.innerHTML =
+    list
+      .map((p) => {
+        const u = p.usage || { qty: 0, times: 0 };
+        const ps = partProcesses(p);
+        const drawings = Array.isArray(p.drawings) ? p.drawings : [];
+        const chips = ps.length
+          ? ps
+              .map((x) => {
+                const chip = `<span class="chip">${esc(x.name || '工序')}<b>${money(x.price)}</b></span>`;
+                return x.desc
+                  ? `<div class="pu">${chip}<span class="pu-desc">${esc(x.desc)}</span></div>`
+                  : `<div class="pu">${chip}</div>`;
+              })
+              .join('')
+          : '<span class="chip muted">未设置工序</span>';
+        const metaBits = [];
+        if (p.material) metaBits.push(esc(p.material));
+        if (u.times) {
+          metaBits.push(`<span class="meta-usage">${p.material ? ' · ' : ''}已报 ${fmtQty(u.qty)} 件</span>`);
+        }
+        const meta = metaBits.join('');
+        return `<div class="part-row">
+        <button type="button" class="part-thumb" data-act="part-image" data-id="${p.id}" title="${p.image ? '点击放大零件图片' : '暂无零件图片'}">${p.image ? `<img src="${esc(imgUrl(p.image))}" alt="" loading="lazy">` : icon('image', 26)}</button>
         <div class="part-main">
           <div class="part-name"><span class="nm">${esc(p.no)}</span>${p.name ? `<span class="name-tag">${esc(p.name)}</span>` : ''}</div>
           ${meta ? `<div class="part-meta">${meta}</div>` : ''}
-          <div class="proc-chips">${chips}</div>
+          <div class="proc-chips proc-chips-with-desc">${chips}</div>
         </div>
         <div class="part-stock">
           <span>库存</span>
           <input class="stock-input" type="number" min="0" step="any" inputmode="decimal" value="${esc(p.stock || 0)}" data-stock="${p.id}" aria-label="库存数量">
         </div>
         <div class="part-actions">
-          <button class="icon-btn" data-act="part-report" data-id="${p.id}" title="用这个零件报工">${icon('plusCircle', 18)}</button>
-          <button class="icon-btn" data-act="part-edit" data-id="${p.id}" title="编辑">${icon('edit', 17)}</button>
-          <button class="icon-btn danger" data-act="part-del" data-id="${p.id}" title="删除">${icon('trash', 17)}</button>
+          <div class="pa-btns">
+            <button class="icon-btn" data-act="part-report" data-id="${p.id}" title="用这个零件报工">${icon('plusCircle', 18)}</button>
+            <button class="icon-btn" data-act="part-edit" data-id="${p.id}" title="编辑">${icon('edit', 17)}</button>
+            <button class="icon-btn danger" data-act="part-del" data-id="${p.id}" title="删除">${icon('trash', 17)}</button>
+          </div>
+          ${drawings.length ? `<button class="drawing-btn" data-act="part-drawings" data-id="${p.id}" title="查看零件图纸">${icon('file', 15)}图纸 (${drawings.length})</button>` : ''}
         </div>
       </div>`;
-    })
-    .join('') +
-    (list.length > shown.length
-      ? `<div class="load-more"><button class="btn btn-ghost" id="loadMoreParts">加载更多（还有 ${list.length - shown.length} 个）</button></div>`
+      })
+      .join('') +
+    (partStore.hasMore
+      ? `<div class="load-more"><button class="btn btn-ghost" id="loadMoreParts">加载更多（还有 ${fmtQty(
+          partStore.total - list.length
+        )} 个）</button></div>`
       : '');
 
   const more = $('#loadMoreParts');
   if (more) {
     more.addEventListener('click', () => {
-      partLimit += 100;
-      renderPartRows();
+      if (partStore.hasMore) loadParts(false);
     });
   }
 
@@ -885,7 +910,7 @@ function renderPartRows() {
 
 async function saveStock(input) {
   const id = input.dataset.stock;
-  const part = state.parts.find((p) => p.id === id);
+  const part = partStore.items.find((p) => p.id === id);
   const value = Number(input.value);
   if (!Number.isFinite(value) || value < 0) {
     toast('库存数量必须是不小于 0 的数字', 'err');
@@ -894,7 +919,10 @@ async function saveStock(input) {
   }
   try {
     const res = await api('POST', 'api.php?action=part.stock&id=' + encodeURIComponent(id), { stock: value });
-    if (part) part.stock = res.part.stock;
+    if (part) {
+      part.stock = res.part.stock;
+      cachePart(part);
+    }
     input.value = res.part.stock;
     toast('库存已更新', 'ok');
   } catch (err) {
@@ -905,8 +933,17 @@ async function saveStock(input) {
 
 /* ==================================================================== 零件表单 */
 
-function viewPartForm(id) {
-  const part = id ? state.parts.find((p) => p.id === id) : null;
+async function viewPartForm(id) {
+  let part = id ? partCache.get(id) : null;
+  if (id && !part) {
+    try {
+      const data = await api('GET', 'api.php?action=parts.get&id=' + encodeURIComponent(id));
+      part = cachePart(data.part);
+    } catch (err) {
+      if (err.status === 401) return;
+      part = null;
+    }
+  }
   if (id && !part) {
     setHead('零件不存在', '它可能已经被删除', `<a class="btn btn-ghost" href="#/parts">${icon('back', 16)}返回列表</a>`);
     $('#view').innerHTML = '';
@@ -922,9 +959,11 @@ function viewPartForm(id) {
   let cover = part ? part.image || '' : '';
   let changed = false;
   const processes = part && partProcesses(part).length
-    ? partProcesses(part).map((x) => ({ name: x.name, price: x.price }))
+    ? partProcesses(part).map((x) => ({ name: x.name, desc: x.desc || '', price: x.price }))
     : [];
-  if (!processes.length) processes.push({ name: '', price: '' });
+  if (!processes.length) processes.push({ name: '', desc: '', price: '' });
+  const drawings = part && Array.isArray(part.drawings) ? part.drawings.slice() : [];
+  const newDrawings = [];
 
   $('#view').innerHTML = `
     <form class="form-card" id="partForm" novalidate>
@@ -960,9 +999,15 @@ function viewPartForm(id) {
       </div>
 
       <div class="proc-editor">
-        <div class="proc-title">工序与单价 <span>同一零件可以有多道工序，每道工序单独定价</span></div>
+        <div class="proc-title">工序与单价 <span>同一零件可以有多道工序，每道工序单独定价；工序说明会在报工时展示给工人</span></div>
         <div id="procList" class="proc-list"></div>
         <button type="button" class="add-row" id="addProc">${icon('plus', 16)}添加工序</button>
+      </div>
+
+      <div class="drawing-box">
+        <div class="proc-title">零件图纸 <span>支持图片与 PDF，一个零件可上传多张；只在「图纸」按钮中查看，不影响零件主图</span></div>
+        <div class="drawing-list" id="drawingList"></div>
+        <button type="button" class="add-row" id="addDrawing">${icon('plus', 16)}上传图纸</button>
       </div>
 
       <div class="form-actions">
@@ -978,6 +1023,7 @@ function viewPartForm(id) {
       .map(
         (x, i) => `<div class="proc-row">
           <input class="input" data-proc="name" data-i="${i}" value="${esc(x.name)}" placeholder="工序名称，如 铣加工">
+          <input class="input" data-proc="desc" data-i="${i}" value="${esc(x.desc || '')}" placeholder="工序说明（选填）">
           <input class="input num" data-proc="price" data-i="${i}" type="number" min="0" step="0.01" inputmode="decimal" value="${x.price === '' ? '' : esc(x.price)}" placeholder="单价">
           <button type="button" class="icon-btn danger" data-proc-del="${i}" title="删除">${icon('x', 16)}</button>
         </div>`
@@ -995,7 +1041,7 @@ function viewPartForm(id) {
     $$('[data-proc-del]', procList).forEach((btn) => {
       btn.addEventListener('click', () => {
         processes.splice(Number(btn.dataset.procDel), 1);
-        if (!processes.length) processes.push({ name: '', price: '' });
+        if (!processes.length) processes.push({ name: '', desc: '', price: '' });
         renderProcRows();
         bindProcs();
       });
@@ -1006,7 +1052,7 @@ function viewPartForm(id) {
   bindProcs();
 
   $('#addProc').addEventListener('click', () => {
-    processes.push({ name: '', price: '' });
+    processes.push({ name: '', desc: '', price: '' });
     renderProcRows();
     bindProcs();
     const rows = $$('.proc-row', procList);
@@ -1064,6 +1110,80 @@ function viewPartForm(id) {
     if (e.dataTransfer.files && e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]);
   });
 
+  /* ---------- 零件图纸：图片 + PDF，多张 ---------- */
+  const drawingList = $('#drawingList');
+  const drawInput = document.createElement('input');
+  drawInput.type = 'file';
+  drawInput.accept = 'image/*,application/pdf';
+  drawInput.multiple = true;
+  drawInput.hidden = true;
+  $('#partForm').appendChild(drawInput);
+  $('#addDrawing').addEventListener('click', () => drawInput.click());
+
+  function renderDrawings() {
+    const rows = [];
+    drawings.forEach((d, i) => {
+      const thumb =
+        d.type === 'pdf'
+          ? '<span class="dthumb pdf">PDF</span>'
+          : `<img class="dthumb" src="${esc(imgUrl(d.path))}" alt="">`;
+      rows.push(`<div class="drawing-item">${thumb}<span class="dname">${esc(d.name)}</span>
+        <button type="button" class="icon-btn danger" data-draw-del="old" data-i="${i}" title="移除">${icon('x', 15)}</button></div>`);
+    });
+    newDrawings.forEach((d, i) => {
+      const thumb =
+        d.type === 'pdf' ? '<span class="dthumb pdf">PDF</span>' : `<img class="dthumb" src="${esc(d.data)}" alt="">`;
+      rows.push(`<div class="drawing-item">${thumb}<span class="dname">${esc(d.name)}</span><span class="hint">待上传</span>
+        <button type="button" class="icon-btn danger" data-draw-del="new" data-i="${i}" title="移除">${icon('x', 15)}</button></div>`);
+    });
+    drawingList.innerHTML = rows.length ? rows.join('') : '<div class="hint" style="padding:4px 0">还没有图纸</div>';
+    $$('[data-draw-del]', drawingList).forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const i = Number(btn.dataset.i);
+        if (btn.dataset.drawDel === 'old') drawings.splice(i, 1);
+        else newDrawings.splice(i, 1);
+        renderDrawings();
+      });
+    });
+  }
+
+  function readDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('文件读取失败'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  drawInput.addEventListener('change', async () => {
+    const files = Array.from(drawInput.files || []);
+    drawInput.value = '';
+    for (const file of files) {
+      if (drawings.length + newDrawings.length >= 20) {
+        toast('最多 20 张图纸', 'err');
+        break;
+      }
+      const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+      if (isPdf && file.size > 20 * 1024 * 1024) {
+        toast('PDF 图纸不能超过 20MB', 'err');
+        continue;
+      }
+      if (!isPdf && file.size > 8 * 1024 * 1024) {
+        toast('图片图纸不能超过 8MB', 'err');
+        continue;
+      }
+      try {
+        const data = await readDataUrl(file);
+        newDrawings.push({ name: file.name, type: isPdf ? 'pdf' : 'image', data });
+        renderDrawings();
+      } catch (err) {
+        toast(err.message || '读取失败', 'err');
+      }
+    }
+  });
+  renderDrawings();
+
   $('#partForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const no = $('#fNo').value.trim();
@@ -1077,7 +1197,9 @@ function viewPartForm(id) {
       note: $('#fNote').value.trim(),
       processes: processes
         .filter((x) => String(x.name).trim() !== '')
-        .map((x) => ({ name: String(x.name).trim(), price: Number(x.price) || 0 })),
+        .map((x) => ({ name: String(x.name).trim(), desc: String(x.desc || '').trim(), price: Number(x.price) || 0 })),
+      drawings,
+      newDrawings,
       image: changed ? cover || '' : undefined,
       removeImage: changed && !cover,
     };
@@ -1104,28 +1226,31 @@ function viewPartForm(id) {
 const PART_HEADERS = ['零件图号', '零件名称', '材料', '库存数量', '备注'];
 function partHeaderRow() {
   const head = PART_HEADERS.slice();
-  for (let i = 1; i <= 6; i += 1) head.push(`工序${i}`, `单价${i}`);
+  for (let i = 1; i <= 9; i += 1) head.push(`工序${i}`, `工序说明${i}`, `单价${i}`);
   return head;
 }
 
 function exportParts() {
-  if (!state.parts.length) return toast('还没有零件可导出', 'err');
-  const rows = [partHeaderRow()];
-  for (const p of state.parts) {
-    const ps = partProcesses(p);
-    const row = [p.no, p.name || '', p.material || '', p.stock || 0, p.note || ''];
-    for (let i = 0; i < 6; i += 1) {
-      const x = ps[i];
-      row.push(x ? x.name : '', x ? x.price : '');
-    }
-    rows.push(row);
-  }
-  downloadText(`零件列表_${todayStr()}.csv`, csvText(rows));
+  if (!state.counts.parts) return toast('还没有零件可导出', 'err');
+  const params = new URLSearchParams();
+  if (partQuery.trim()) params.set('q', partQuery.trim());
+  const a = document.createElement('a');
+  a.href = 'api.php?action=export.parts' + (params.toString() ? '&' + params.toString() : '');
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
 
 function downloadPartsTemplate() {
   const rows = [partHeaderRow()];
-  rows.push(['示例-001', '示例零件', '6063T6', 10, '这一行可以删除', '铣加工', 4.6, '钻孔', 1.2, '', '', '', '', '', '', '', '']);
+  const sample = ['示例-001', '示例零件', '6063T6', 10, '这一行可以删除'];
+  for (let i = 1; i <= 9; i += 1) {
+    sample.push(i === 1 ? '铣加工' : i === 2 ? '钻孔' : '');
+    sample.push(i === 1 ? '先铣外形，留 0.2mm 余量' : i === 2 ? '按图纸孔位钻孔' : '');
+    sample.push(i === 1 ? 4.6 : i === 2 ? 1.2 : '');
+  }
+  rows.push(sample);
   downloadText('零件导入模板.csv', csvText(rows));
 }
 
@@ -1170,11 +1295,15 @@ function openPartsImport() {
         const no = cell(row, '零件图号');
         if (!no) continue;
         const processes = [];
-        for (let n = 1; n <= 6; n += 1) {
+        for (let n = 1; n <= 9; n += 1) {
           const name = cell(row, `工序${n}`);
           if (!name) continue;
           const price = cell(row, `单价${n}`);
-          processes.push({ name, price: price === '' ? 0 : Number(price) });
+          processes.push({
+            name,
+            desc: cell(row, `工序说明${n}`),
+            price: price === '' ? 0 : Number(price),
+          });
         }
         parts.push({
           no,
@@ -1210,30 +1339,12 @@ function openPartsImport() {
 
 /* ==================================================================== 订单 */
 
-let orderRange = { key: 'all', from: '', to: '' };
-let orderQuery = '';
-let orderLimit = 100;
-
-function filteredOrders() {
-  let list = state.orders.slice();
-  if (orderRange.from) list = list.filter((o) => String(o.date || '') >= orderRange.from);
-  if (orderRange.to) list = list.filter((o) => String(o.date || '') <= orderRange.to);
-  const q = orderQuery.trim().toLowerCase();
-  if (q) {
-    list = list.filter((o) =>
-      [o.no, o.partNo, o.partName, o.process, o.note].some((v) => String(v || '').toLowerCase().includes(q))
-    );
-  }
-  return list;
-}
-
 function orderCardHtml(o) {
   const stat = orderReported(o);
   const remaining = orderRemaining(o);
   const pct = o.qty > 0 ? Math.min(100, Math.round((stat.qty / o.qty) * 100)) : 0;
-  const part = state.parts.find((p) => p.id === o.partId);
-  const title = (part && part.no) || o.partNo || partName(part);
-  const subName = (part && part.name) || o.partName || '';
+  const title = o.partNo || '未关联零件';
+  const subName = o.partName || '';
   return `<article class="order-card">
     <div class="order-head">
       <div class="order-main" style="min-width:0">
@@ -1262,8 +1373,10 @@ function viewOrders() {
     `<button class="btn btn-primary" data-action="new-order">${icon('plus', 16)}新建订单</button>`
   );
 
+  orderStore = newStore();
+  orderRange = resolveRange(orderRange);
   const view = $('#view');
-  if (!state.orders.length) {
+  if (!state.counts.orders) {
     $('#pageSub').textContent = '订单可以在这里新建，也可以在报工时自动创建';
     view.innerHTML = emptyState(
       'package',
@@ -1275,7 +1388,6 @@ function viewOrders() {
     return;
   }
 
-  orderRange = resolveRange(orderRange);
   view.innerHTML = `
     <div class="toolbar order-filter">
       ${rangeFilterHtml('ordRange', orderRange)}
@@ -1283,54 +1395,123 @@ function viewOrders() {
     </div>
     <div class="order-list" id="orderList"></div>`;
 
-  function renderList() {
-    const list = filteredOrders();
-    const shown = list.slice(0, orderLimit);
-    $('#pageSub').textContent = `显示 ${shown.length} / ${list.length} 张订单（共 ${state.orders.length} 张）`;
-    if (!list.length) {
-      $('#orderList').innerHTML = `<div class="empty" style="padding:44px 20px"><h3>这个条件下没有订单</h3><p>换个日期范围，或清空搜索关键词。</p></div>`;
-      return;
-    }
-    $('#orderList').innerHTML =
-      shown.map(orderCardHtml).join('') +
-      (list.length > shown.length
-        ? `<div class="load-more"><button class="btn btn-ghost" id="loadMoreOrders">加载更多（还有 ${list.length - shown.length} 张）</button></div>`
-        : '');
-    const more = $('#loadMoreOrders');
-    if (more) {
-      more.addEventListener('click', () => {
-        orderLimit += 100;
-        renderList();
-      });
-    }
-  }
-
-  renderList();
+  loadOrders(true);
   setupRangeFilter($('#ordRange'), orderRange, (r) => {
     orderRange = r;
-    orderLimit = 100;
-    renderList();
+    loadOrders(true);
   });
   $('#ordSearch').addEventListener(
     'input',
     debounce((e) => {
       orderQuery = e.target.value;
-      orderLimit = 100;
-      renderList();
+      loadOrders(true);
     })
   );
 }
 
-function viewOrderForm(id, presetPartId) {
-  const order = id ? state.orders.find((o) => o.id === id) : null;
+async function loadOrders(reset) {
+  const box = $('#orderList');
+  if (!box) return;
+  if (reset) {
+    orderStore.items = [];
+    orderStore.page = 0;
+    orderStore.total = 0;
+    orderStore.hasMore = false;
+    box.innerHTML = '<div class="empty" style="padding:44px 20px"><p>加载中…</p></div>';
+  }
+  const my = ++orderStore.seq;
+  try {
+    const params = new URLSearchParams({
+      page: String(orderStore.page + 1),
+      pageSize: '100',
+      q: orderQuery.trim(),
+    });
+    if (orderRange.from) params.set('from', orderRange.from);
+    if (orderRange.to) params.set('to', orderRange.to);
+    const data = await api('GET', 'api.php?action=orders.list&' + params.toString());
+    if (my !== orderStore.seq) return;
+    const list = data.items || [];
+    orderStore.items = reset ? list : orderStore.items.concat(list);
+    orderStore.total = Number(data.total) || 0;
+    orderStore.page = Number(data.page) || 1;
+    orderStore.hasMore = !!data.hasMore;
+    renderOrders();
+  } catch (err) {
+    if (my !== orderStore.seq) return;
+    if (err.status !== 401) toast(err.message, 'err');
+    if (reset) {
+      box.innerHTML = `<div class="empty" style="padding:44px 20px"><h3>读取订单失败</h3><p>${esc(
+        err.message || '请稍后重试'
+      )}</p></div>`;
+    }
+  }
+}
+
+function renderOrders() {
+  const box = $('#orderList');
+  if (!box) return;
+  const list = orderStore.items;
+  $('#pageSub').textContent = `显示 ${fmtQty(list.length)} / ${fmtQty(orderStore.total)} 张订单（共 ${fmtQty(
+    state.counts.orders
+  )} 张）`;
+  if (!list.length) {
+    box.innerHTML = `<div class="empty" style="padding:44px 20px"><h3>这个条件下没有订单</h3><p>换个日期范围，或清空搜索关键词。</p></div>`;
+    return;
+  }
+  box.innerHTML =
+    list.map(orderCardHtml).join('') +
+    (orderStore.hasMore
+      ? `<div class="load-more"><button class="btn btn-ghost" id="loadMoreOrders">加载更多（还有 ${fmtQty(
+          orderStore.total - list.length
+        )} 张）</button></div>`
+      : '');
+  const more = $('#loadMoreOrders');
+  if (more) {
+    more.addEventListener('click', () => {
+      if (orderStore.hasMore) loadOrders(false);
+    });
+  }
+}
+
+async function viewOrderForm(id, presetPartId) {
+  let order = null;
+  if (id) {
+    try {
+      const data = await api('GET', 'api.php?action=orders.get&id=' + encodeURIComponent(id));
+      order = data.order;
+    } catch (err) {
+      if (err.status === 401) return;
+      order = null;
+    }
+  }
   if (id && !order) {
     setHead('订单不存在', '它可能已经被删除', `<a class="btn btn-ghost" href="#/orders">${icon('back', 16)}返回列表</a>`);
     $('#view').innerHTML = '';
     return;
   }
 
-  const preset = presetPartId ? state.parts.find((p) => p.id === presetPartId) : null;
-  const currentPart = order ? state.parts.find((p) => p.id === order.partId) : preset;
+  let preset = presetPartId ? partCache.get(presetPartId) : null;
+  if (presetPartId && !preset) {
+    try {
+      const data = await api('GET', 'api.php?action=parts.get&id=' + encodeURIComponent(presetPartId));
+      preset = cachePart(data.part);
+    } catch (err) {
+      if (err.status === 401) return;
+      preset = null;
+    }
+  }
+  let currentPart = preset;
+  if (order && order.partId) {
+    currentPart = partCache.get(order.partId) || null;
+    if (!currentPart) {
+      try {
+        const data = await api('GET', 'api.php?action=parts.get&id=' + encodeURIComponent(order.partId));
+        currentPart = cachePart(data.part);
+      } catch (err) {
+        if (err.status === 401) return;
+      }
+    }
+  }
 
   setHead(
     order ? '编辑订单' : '新建订单',
@@ -1432,40 +1613,6 @@ function viewOrderForm(id, presetPartId) {
 
 /* ==================================================================== 报工记录 */
 
-function filteredReports() {
-  let list = state.reports.slice();
-  if (reportRange.from) list = list.filter((r) => String(r.date || '') >= reportRange.from);
-  if (reportRange.to) list = list.filter((r) => String(r.date || '') <= reportRange.to);
-  const q = reportQuery.trim().toLowerCase();
-  if (q) {
-    list = list.filter(
-      (r) =>
-        String(r.no || '').toLowerCase().includes(q) ||
-        String(r.worker || '').toLowerCase().includes(q) ||
-        String(r.orderNo || '').toLowerCase().includes(q) ||
-        (r.items || []).some(
-          (it) =>
-            String(it.partNo || '').toLowerCase().includes(q) ||
-            String(it.partName || '').toLowerCase().includes(q) ||
-            String(it.orderNo || '').toLowerCase().includes(q)
-        )
-    );
-  }
-  return list;
-}
-
-function reportTotals(list) {
-  let qty = 0;
-  let amount = 0;
-  for (const r of list) {
-    for (const it of r.items || []) {
-      qty += Number(it.qty) || 0;
-      amount += Number(it.amount) || 0;
-    }
-  }
-  return { qty: round2(qty), amount: round2(amount) };
-}
-
 function reportCard(r) {
   const total = round2((r.items || []).reduce((s, it) => s + (Number(it.amount) || 0), 0));
   const qty = round2((r.items || []).reduce((s, it) => s + (Number(it.qty) || 0), 0));
@@ -1523,6 +1670,7 @@ function reportCard(r) {
 
 function viewReports() {
   reportRange = resolveRange(reportRange);
+  reportStore = newStore();
   setHead(
     '报工单记录',
     '',
@@ -1538,52 +1686,90 @@ function viewReports() {
     <div class="stats" id="stats"></div>
     <div class="report-list" id="reportList"></div>`;
 
-  renderReportContent();
+  loadReports(true);
   setupRangeFilter($('#repRange'), reportRange, (r) => {
     reportRange = r;
-    reportLimit = 50;
-    renderReportContent();
+    loadReports(true);
   });
   $('#repSearch').addEventListener(
     'input',
     debounce((e) => {
       reportQuery = e.target.value;
-      reportLimit = 50;
-      renderReportContent();
+      loadReports(true);
     })
   );
 }
 
-function renderReportContent() {
-  const list = filteredReports();
-  const t = reportTotals(list);
-  $('#pageSub').textContent = `${list.length} 张单 · 数量 ${fmtQty(t.qty)} 件 · 金额 ${money(t.amount)}`;
+async function loadReports(reset) {
+  const box = $('#reportList');
+  if (!box) return;
+  if (reset) {
+    reportStore.items = [];
+    reportStore.page = 0;
+    reportStore.total = 0;
+    reportStore.hasMore = false;
+    box.innerHTML = '<div class="empty" style="padding:44px 20px"><p>加载中…</p></div>';
+  }
+  const my = ++reportStore.seq;
+  try {
+    const params = new URLSearchParams({
+      page: String(reportStore.page + 1),
+      pageSize: '50',
+      q: reportQuery.trim(),
+    });
+    if (reportRange.from) params.set('from', reportRange.from);
+    if (reportRange.to) params.set('to', reportRange.to);
+    const data = await api('GET', 'api.php?action=reports.list&' + params.toString());
+    if (my !== reportStore.seq) return;
+    const list = data.items || [];
+    reportStore.items = reset ? list : reportStore.items.concat(list);
+    reportStore.total = Number(data.total) || 0;
+    reportStore.page = Number(data.page) || 1;
+    reportStore.hasMore = !!data.hasMore;
+    reportStore.summary = data.summary || { count: reportStore.total, qty: 0, amount: 0 };
+    renderReports();
+  } catch (err) {
+    if (my !== reportStore.seq) return;
+    if (err.status !== 401) toast(err.message, 'err');
+    if (reset) {
+      box.innerHTML = `<div class="empty" style="padding:44px 20px"><h3>读取报工记录失败</h3><p>${esc(
+        err.message || '请稍后重试'
+      )}</p></div>`;
+    }
+  }
+}
+
+function renderReports() {
+  const box = $('#reportList');
+  if (!box) return;
+  const list = reportStore.items;
+  const sum = reportStore.summary || { count: 0, qty: 0, amount: 0 };
+  $('#pageSub').textContent = `${fmtQty(sum.count)} 张单 · 数量 ${fmtQty(sum.qty)} 件 · 金额 ${money(sum.amount)}`;
 
   $('#stats').innerHTML = `
-    <div class="stat"><div class="stat-k">报工单</div><div class="stat-v">${list.length}<small>张</small></div></div>
-    <div class="stat"><div class="stat-k">数量合计</div><div class="stat-v">${fmtQty(t.qty)}<small>件</small></div></div>
-    <div class="stat"><div class="stat-k">金额合计</div><div class="stat-v">${money(t.amount)}</div></div>`;
+    <div class="stat"><div class="stat-k">报工单</div><div class="stat-v">${fmtQty(sum.count)}<small>张</small></div></div>
+    <div class="stat"><div class="stat-k">数量合计</div><div class="stat-v">${fmtQty(sum.qty)}<small>件</small></div></div>
+    <div class="stat"><div class="stat-k">金额合计</div><div class="stat-v">${money(sum.amount)}</div></div>`;
 
-  const box = $('#reportList');
   if (!list.length) {
-    box.innerHTML = state.reports.length
+    box.innerHTML = state.counts.reports
       ? `<div class="empty" style="padding:44px 20px"><h3>这个条件下没有记录</h3><p>换个日期范围，或清空搜索关键词。</p></div>`
       : emptyState('clipboard', '还没有报工记录', '点击「新增报工」，选择零件、填写数量，一张报工单几秒钟就能录完。', '新增报工', 'new-report');
     return;
   }
 
-  const shown = list.slice(0, reportLimit);
   box.innerHTML =
-    shown.map(reportCard).join('') +
-    (list.length > shown.length
-      ? `<div class="load-more"><button class="btn btn-ghost" id="loadMoreReports">加载更多（还有 ${list.length - shown.length} 张）</button></div>`
+    list.map(reportCard).join('') +
+    (reportStore.hasMore
+      ? `<div class="load-more"><button class="btn btn-ghost" id="loadMoreReports">加载更多（还有 ${fmtQty(
+          reportStore.total - list.length
+        )} 张）</button></div>`
       : '');
 
   const more = $('#loadMoreReports');
   if (more) {
     more.addEventListener('click', () => {
-      reportLimit += 50;
-      renderReportContent();
+      if (reportStore.hasMore) loadReports(false);
     });
   }
 }
@@ -1591,13 +1777,13 @@ function renderReportContent() {
 /* ==================================================================== 报工表单 */
 
 let draft = null;
+let orderOptionCache = new Map();
 
 function amountOf(it) {
   return round2((Number(it.qty) || 0) * (Number(it.price) || 0));
 }
 
-function newItem(partId) {
-  const part = partId ? state.parts.find((p) => p.id === partId) : null;
+function newItem(part) {
   const ps = partProcesses(part);
   return {
     key: uid(),
@@ -1607,6 +1793,32 @@ function newItem(partId) {
     price: ps.length ? ps[0].price : '',
     orderId: '',
   };
+}
+
+/* 订单下拉：按零件 + 工序远程查询，已报/剩余由服务端计算 */
+function orderCacheKey(partId, process) {
+  return `${draft && draft.id ? draft.id : ''}|${partId}|${process || ''}`;
+}
+
+async function loadOrderOptions(partId, process) {
+  const key = orderCacheKey(partId, process);
+  if (orderOptionCache.has(key)) return orderOptionCache.get(key);
+  const params = new URLSearchParams({ partId, limit: '50' });
+  if (process) params.set('process', process);
+  if (draft && draft.id) params.set('excludeReportId', draft.id);
+  let items = [];
+  try {
+    const data = await api('GET', 'api.php?action=orders.search&' + params.toString());
+    items = data.items || [];
+  } catch (err) {
+    if (err.status !== 401) toast(err.message, 'err');
+  }
+  orderOptionCache.set(key, items);
+  return items;
+}
+
+function orderOptionsOf(it) {
+  return orderOptionCache.get(orderCacheKey(it.partId, it.process)) || [];
 }
 
 function processCellHtml(it, part) {
@@ -1625,23 +1837,33 @@ function processCellHtml(it, part) {
     .join('')}</select>`;
 }
 
-function orderCellHtml(it, part) {
-  const orders = matchingOrders(part, it.process);
-  const selected = state.orders.find((o) => o.id === it.orderId);
+function orderCellHtml(it) {
+  const orders = orderOptionsOf(it);
+  const selected = orders.find((o) => o.id === it.orderId);
   let hint = '保存后自动建单';
+  let warn = false;
   if (selected) {
-    const rem = orderRemaining(selected, draft ? draft.id : null);
+    const rem = orderRemaining(selected);
     hint = `剩余 ${fmtQty(rem)}`;
-    if (Number(it.qty) > rem) hint += ' · 超出';
+    if (Number(it.qty) > rem) {
+      hint += ' · 超出';
+      warn = true;
+    }
+  } else if (it.orderId) {
+    hint = '订单不可用，保存后自动建单';
+    warn = true;
   }
   const opts = ['<option value="">自动新建</option>'].concat(
     orders.map((o) => {
-      const rem = orderRemaining(o, draft ? draft.id : null);
+      const rem = orderRemaining(o);
       return `<option value="${o.id}" ${o.id === it.orderId ? 'selected' : ''}>${esc(o.no)}（剩 ${fmtQty(rem)}）</option>`;
     })
   );
+  if (it.orderId && !selected) {
+    opts.push(`<option value="${esc(it.orderId)}" selected>${esc(it.orderId)}</option>`);
+  }
   return `<div class="order-cell"><select class="select" data-f="order">${opts.join('')}</select><div class="order-hint ${
-    selected && Number(it.qty) > orderRemaining(selected, draft ? draft.id : null) ? 'warn' : ''
+    warn ? 'warn' : ''
   }">${esc(hint)}</div></div>`;
 }
 
@@ -1663,8 +1885,25 @@ function ocrBarHtml() {
     <div class="ocr-result" id="ocrResult" hidden></div>`;
 }
 
+function procDescHtml(part) {
+  if (!part) return '';
+  const ps = partProcesses(part).filter((x) => String(x.desc || '').trim() !== '');
+  if (!ps.length) return '';
+  return `<div class="pdc">
+    <button type="button" class="pdc-toggle">
+      <span class="pdc-t-left">${icon('clipboard', 15)}<b>该零件工序说明</b><span class="pdc-hint">· ${ps.length} 道 · 点击展开</span></span>
+      <span class="pdc-caret">▾</span>
+    </button>
+    <div class="pdc-panel">${ps
+      .map(
+        (x) => `<div class="pdc-row"><div class="pdc-proc">${esc(x.name)}</div><div class="pdc-desc">${esc(x.desc)}</div></div>`
+      )
+      .join('')}</div>
+  </div>`;
+}
+
 function itemRowHtml(it, idx) {
-  const part = state.parts.find((p) => p.id === it.partId);
+  const part = partCache.get(it.partId) || null;
   const label = part ? partLabel(part) : '';
   const qty = it.qty === '' || it.qty === null || it.qty === undefined ? '' : it.qty;
   const price = it.price === '' || it.price === null || it.price === undefined ? '' : it.price;
@@ -1678,17 +1917,39 @@ function itemRowHtml(it, idx) {
       <input class="input num" data-f="price" type="number" inputmode="decimal" min="0" step="0.01" value="${esc(price)}" placeholder="0.00">
     </div>
     <div class="f f-amount"><div class="f-label">金额</div><div class="amount-val">${money(amountOf(it))}</div></div>
-    <div class="f f-order"><div class="f-label">订单</div>${orderCellHtml(it, part)}</div>
+    <div class="f f-order"><div class="f-label">订单</div>${orderCellHtml(it)}</div>
     <button type="button" class="icon-btn danger del" data-del title="删除本行">${icon('x', 16)}</button>
-  </div>`;
+  </div>${procDescHtml(part)}`;
 }
 
-function viewReportForm(id, presetPartId) {
-  const rep = id ? state.reports.find((r) => r.id === id) : null;
+async function viewReportForm(id, presetPartId) {
+  let rep = null;
+  if (id) {
+    try {
+      const data = await api('GET', 'api.php?action=reports.get&id=' + encodeURIComponent(id));
+      rep = data.report;
+    } catch (err) {
+      if (err.status === 401) return;
+      rep = null;
+    }
+  }
   if (id && !rep) {
     setHead('报工单不存在', '它可能已经被删除', `<a class="btn btn-ghost" href="#/reports">${icon('back', 16)}返回记录</a>`);
     $('#view').innerHTML = '';
     return;
+  }
+
+  let presetPart = null;
+  if (presetPartId) {
+    presetPart = partCache.get(presetPartId) || null;
+    if (!presetPart) {
+      try {
+        const data = await api('GET', 'api.php?action=parts.get&id=' + encodeURIComponent(presetPartId));
+        presetPart = cachePart(data.part);
+      } catch (err) {
+        if (err.status === 401) return;
+      }
+    }
   }
 
   draft = {
@@ -1711,7 +1972,15 @@ function viewReportForm(id, presetPartId) {
     images: rep && Array.isArray(rep.images) ? rep.images.slice() : [],
     newImages: [],
   };
-  if (!draft.items.length) draft.items.push(newItem(presetPartId));
+  if (!draft.items.length) draft.items.push(newItem(presetPart));
+  orderOptionCache = new Map();
+  if (rep) {
+    try {
+      await fetchParts(draft.items.map((it) => it.partId));
+    } catch (err) {
+      if (err.status === 401) return;
+    }
+  }
 
   setHead(
     rep ? '编辑报工单' : '新增报工',
@@ -1776,6 +2045,13 @@ function viewReportForm(id, presetPartId) {
   const itemList = $('#itemList');
   const attachList = $('#attachList');
 
+  itemList.addEventListener('click', (e) => {
+    const btn = e.target.closest('.pdc-toggle');
+    if (!btn) return;
+    const box = btn.closest('.pdc');
+    if (box) box.classList.toggle('open');
+  });
+
   function updateTotals() {
     const qty = draft.items.reduce((s, it) => s + (Number(it.qty) || 0), 0);
     const amount = draft.items.reduce((s, it) => s + amountOf(it), 0);
@@ -1808,14 +2084,21 @@ function viewReportForm(id, presetPartId) {
     });
   }
 
-  function renderItems() {
+  async function ensureItemData() {
+    const ids = draft.items.map((it) => it.partId).filter(Boolean);
+    const tasks = [];
+    if (ids.length) tasks.push(fetchParts(ids));
+    draft.items.forEach((it) => {
+      if (it.partId) tasks.push(loadOrderOptions(it.partId, it.process));
+    });
+    await Promise.all(tasks);
+  }
+
+  async function renderItems() {
+    await ensureItemData();
     draft.items.forEach((it) => {
       if (!it.orderId) return;
-      const o = state.orders.find((x) => x.id === it.orderId);
-      const part = state.parts.find((p) => p.id === it.partId);
-      if (!o || !part || o.partId !== part.id || (o.process && it.process && o.process !== it.process)) {
-        it.orderId = '';
-      }
+      if (!orderOptionsOf(it).some((o) => o.id === it.orderId)) it.orderId = '';
     });
     itemList.innerHTML = draft.items.map(itemRowHtml).join('');
     $$('.item-row', itemList).forEach((row, idx) => {
@@ -1825,20 +2108,21 @@ function viewReportForm(id, presetPartId) {
           it.partId = '';
           return;
         }
+        cachePart(part);
         it.partId = part.id;
         const ps = partProcesses(part);
         it.process = ps.length ? ps[0].name : '';
         it.price = ps.length ? ps[0].price : '';
         it.orderId = '';
-        renderItems();
-        const fresh = $$('.item-row', itemList)[idx];
-        if (fresh) {
+        renderItems().then(() => {
+          const fresh = $$('.item-row', itemList)[idx];
+          if (!fresh) return;
           const qty = $('[data-f="qty"]', fresh);
-          setTimeout(() => {
+          if (qty) {
             qty.focus();
             qty.select();
-          }, 0);
-        }
+          }
+        });
       });
 
       row.addEventListener('input', (e) => {
@@ -1850,9 +2134,9 @@ function viewReportForm(id, presetPartId) {
         updateTotals();
         if (f === 'qty' && it.orderId) {
           const hint = $('.order-hint', row);
-          const sel = state.orders.find((o) => o.id === it.orderId);
+          const sel = orderOptionsOf(it).find((o) => o.id === it.orderId);
           if (hint && sel) {
-            const rem = orderRemaining(sel, draft.id);
+            const rem = orderRemaining(sel);
             const over = Number(it.qty) > rem;
             hint.textContent = `剩余 ${fmtQty(rem)}${over ? ' · 超出' : ''}`;
             hint.classList.toggle('warn', over);
@@ -1864,17 +2148,14 @@ function viewReportForm(id, presetPartId) {
         const f = e.target.dataset.f;
         if (f === 'process') {
           it.process = e.target.value;
-          const part = state.parts.find((p) => p.id === it.partId);
+          const part = partCache.get(it.partId) || null;
           const ps = partProcesses(part);
           const hit = ps.find((x) => x.name === it.process);
           if (hit) {
             it.price = hit.price;
             $('[data-f="price"]', row).value = hit.price;
           }
-          if (it.orderId) {
-            const o = state.orders.find((x) => x.id === it.orderId);
-            if (!o || (o.process && o.process !== it.process)) it.orderId = '';
-          }
+          it.orderId = '';
           updateRow(row, it);
           updateTotals();
           renderItems();
@@ -1912,99 +2193,18 @@ function viewReportForm(id, presetPartId) {
     return normKey(v).replace(/[^0-9A-Z\u4e00-\u9fa5]/g, '');
   }
 
-  function simKey(a, b) {
-    if (!a.length || !b.length) return 0;
-    const m = a.length;
-    const n = b.length;
-    let prev = Array.from({ length: n + 1 }, (_, i) => i);
-    for (let i = 1; i <= m; i++) {
-      const cur = [i];
-      for (let j = 1; j <= n; j++) {
-        cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
-      }
-      prev = cur;
+  /* 图号 / 名称匹配改由服务端 parts.match 完成，前端只保留工序归一化 */
+  async function matchParts(recs) {
+    if (!recs.length) return [];
+    try {
+      const data = await api('POST', 'api.php?action=parts.match', {
+        queries: recs.map((r) => ({ no: r.partNo || '', name: r.partName || '' })),
+      });
+      return (data.matches || []).map((m) => (m && m.part ? cachePart(m.part) : null));
+    } catch (err) {
+      if (err.status !== 401) toast(err.message, 'err');
+      return recs.map(() => null);
     }
-    return 1 - prev[n] / Math.max(m, n);
-  }
-
-  /* 去掉日期写法，避免 10.11 与图号粘成一条长串 */
-  function stripDate(s) {
-    return String(s)
-      .replace(/20\d{2}\s*[-\/年.]\s*\d{1,2}\s*[-\/月.]\s*\d{1,2}\s*日?/g, ' ')
-      .replace(/(?<!\d)\d{1,2}\s*[-\/.]\s*\d{1,2}(?!\d)\s*日?/g, ' ');
-  }
-
-  /* 在文本中按图号模糊匹配零件：精确 → 去分隔符 → 图号段 → 相似度（容忍 1-2 个 OCR 错字） */
-  function fuzzyPart(text) {
-    const bare = stripDate(text);
-    const raw = normKey(bare);
-    const flat = compactKey(bare);
-    if (!raw) return null;
-    /* 最长字母数字段：手写常省略图号前缀，90535 R183 → TD90535R183 */
-    const runs = flat.match(/[0-9A-Z]{4,}/g) || [];
-    let maxRun = 0;
-    runs.forEach((r) => (maxRun = Math.max(maxRun, r.length)));
-    const longRuns = runs.filter((r) => r.length === maxRun);
-    let best = null;
-    let bestScore = 0;
-    for (const p of state.parts) {
-      const no = normKey(p.no);
-      const noC = compactKey(p.no);
-      const nm = normKey(p.name);
-      let score = 0;
-      if (no && raw.includes(no)) score = 1;
-      else if (noC.length >= 4 && flat.includes(noC)) score = 0.96;
-      else {
-        for (const r of longRuns) {
-          if (r.length < 4) continue;
-          /* 图号尾部可能粘上数量：523R30130 → 取前缀 523R301 */
-          for (let l = Math.min(r.length, noC.length); l >= 4; l--) {
-            const pre = r.slice(0, l);
-            if (noC.includes(pre)) {
-              score = Math.max(score, 0.95);
-              break;
-            }
-            if (pre.includes(noC)) {
-              score = Math.max(score, 0.93);
-              break;
-            }
-          }
-          /* 缺字 / 多字：30607R22 ≈ T306077R22 */
-          if (score < 0.9) {
-            const sim = simKey(r, noC);
-            if (sim >= 0.72) score = Math.max(score, 0.8 + (sim - 0.72) * 0.5);
-          }
-        }
-        if (!score && noC.length >= 5) {
-          const len = noC.length;
-          let seg = 0;
-          for (let i = 0; i + len <= flat.length; i++) {
-            seg = Math.max(seg, simKey(flat.slice(i, i + len), noC));
-          }
-          if (seg >= 0.75) score = 0.72 + (seg - 0.75) * 0.5;
-        }
-      }
-      if (!score && nm.length >= 2 && raw.includes(nm)) score = 0.9;
-      if (score > bestScore) {
-        bestScore = score;
-        best = p;
-      }
-    }
-    return best ? { part: best, score: bestScore } : null;
-  }
-
-  function matchPart(rec) {
-    const no = normKey(rec.partNo);
-    const name = normKey(rec.partName);
-    let hit = no ? state.parts.find((p) => normKey(p.no) === no) : null;
-    if (!hit && no) hit = state.parts.find((p) => compactKey(p.no) === compactKey(no));
-    if (!hit && name) hit = state.parts.find((p) => normKey(p.name) === name);
-    if (!hit && no) hit = state.parts.find((p) => p.name && normKey(p.name) === no);
-    if (!hit) {
-      const fz = fuzzyPart([rec.partNo, rec.partName].filter(Boolean).join(' '));
-      if (fz) hit = fz.part;
-    }
-    return hit || null;
   }
 
   /* 工序同义字典：铣加工 ↔ 铣，钻孔 ↔ 钻，车外圆 ↔ 车 … */
@@ -2079,7 +2279,7 @@ function viewReportForm(id, presetPartId) {
     return { name, price: hit ? hit.price : '' };
   }
 
-  function applyRecognized(res) {
+  async function applyRecognized(res) {
     const f = res.fields || {};
     let dateFilled = false;
     if (f.date) {
@@ -2092,11 +2292,12 @@ function viewReportForm(id, presetPartId) {
     let filled = 0;
     if (recs.length) {
       if (draft.items.every((it) => !it.partId)) draft.items = [];
-      for (const rec of recs) {
-        const part = matchPart(rec);
+      const matched = await matchParts(recs);
+      recs.forEach((rec, i) => {
+        const part = matched[i];
         if (!part) {
           notes.push(`零件库中没有「${rec.partNo || rec.partName || '未识别'}」，该行未填充`);
-          continue;
+          return;
         }
         const p = pickProcess(part, rec.process);
         if (rec.process && !matchProcessName(part, rec.process) && partProcesses(part).length) {
@@ -2111,7 +2312,7 @@ function viewReportForm(id, presetPartId) {
           orderId: '',
         });
         filled += 1;
-      }
+      });
       if (!draft.items.length) draft.items.push(newItem());
       renderItems();
     }
@@ -2121,7 +2322,7 @@ function viewReportForm(id, presetPartId) {
   /* ---------- 手动填充：点选识别原文 ---------- */
 
   /* 从一行原文里解析日期 / 零件 / 工序 / 数量，供手动填充使用 */
-  function parseOcrLine(text) {
+  function parseOcrLine(text, matchedPart) {
     const out = { date: '', part: null, partScore: 0, process: '', qty: 0 };
     const s = String(text || '');
 
@@ -2138,13 +2339,12 @@ function viewReportForm(id, presetPartId) {
       }
     }
 
-    const fz = fuzzyPart(s);
-    if (fz) {
-      out.part = fz.part;
-      out.partScore = fz.score;
+    if (matchedPart) {
+      out.part = matchedPart;
+      out.partScore = 1;
       const base = procBase(s);
       if (base) {
-        const hit = partProcesses(fz.part).find((x) => procBase(x.name) === base);
+        const hit = partProcesses(matchedPart).find((x) => procBase(x.name) === base);
         if (hit) out.process = hit.name;
       }
     }
@@ -2212,17 +2412,23 @@ function viewReportForm(id, presetPartId) {
       .map((s) => s.trim())
       .filter(Boolean)
       .slice(0, 40);
+    let lineParts = [];
+
+    function tagsOf(p) {
+      const tags = [];
+      if (p.date) tags.push(`<i class="tag-date">${esc(p.date.slice(5))}</i>`);
+      if (p.part) tags.push(`<i class="tag-part">${esc(p.part.no)}</i>`);
+      if (p.process) tags.push(`<i class="tag-proc">${esc(p.process)}</i>`);
+      if (p.qty > 0) tags.push(`<i class="tag-qty">${fmtQty(p.qty)}</i>`);
+      return tags.join('');
+    }
+
     const lineHtml = rawLines
       .map((ln, i) => {
-        const p = parseOcrLine(ln);
-        const tags = [];
-        if (p.date) tags.push(`<i class="tag-date">${esc(p.date.slice(5))}</i>`);
-        if (p.part) tags.push(`<i class="tag-part">${esc(p.part.no)}</i>`);
-        if (p.process) tags.push(`<i class="tag-proc">${esc(p.process)}</i>`);
-        if (p.qty > 0) tags.push(`<i class="tag-qty">${fmtQty(p.qty)}</i>`);
+        const p = parseOcrLine(ln, null);
         return `<button type="button" class="ocr-line" data-i="${i}">
             <span class="ln-text">${esc(ln)}</span>
-            <span class="ln-tags">${tags.join('')}</span>
+            <span class="ln-tags">${tagsOf(p)}</span>
           </button>`;
       })
       .join('');
@@ -2263,6 +2469,19 @@ function viewReportForm(id, presetPartId) {
     const fillBar = $('#ocrFill', box);
     if (!fillBar) return;
 
+    if (rawLines.length) {
+      api('POST', 'api.php?action=parts.match', { texts: rawLines })
+        .then((data) => {
+          lineParts = (data.matches || []).map((m) => (m && m.part ? cachePart(m.part) : null));
+          $$('.ocr-line', box).forEach((btn) => {
+            const i = Number(btn.dataset.i);
+            const tags = $('.ln-tags', btn);
+            if (tags) tags.innerHTML = tagsOf(parseOcrLine(rawLines[i] || '', lineParts[i]));
+          });
+        })
+        .catch(() => {});
+    }
+
     const cur = { parsed: null, part: null };
     const partCombo = $('#mfPart .combo', fillBar);
     const dateInput = $('#mfDate', fillBar);
@@ -2297,7 +2516,7 @@ function viewReportForm(id, presetPartId) {
       btn.addEventListener('click', () => {
         const i = Number(btn.dataset.i);
         const text = rawLines[i] || '';
-        const parsed = parseOcrLine(text);
+        const parsed = parseOcrLine(text, lineParts[i]);
         cur.parsed = parsed;
         cur.part = parsed.part;
         $$('.ocr-line', box).forEach((b) => b.classList.toggle('on', b === btn));
@@ -2346,8 +2565,15 @@ function viewReportForm(id, presetPartId) {
     label.textContent = '识别中…';
     try {
       const image = await compressImage(file);
+      /* 识别用的原图一并存入图片附件 */
+      if (draft.images.length + draft.newImages.length < 6) {
+        draft.newImages.push(image);
+        renderAttachments();
+      } else {
+        toast('图片附件已达 6 张，本次识别图片未保存', 'err');
+      }
       const res = await api('POST', `api.php?action=plugin.invoke&id=${encodeURIComponent(ocrPlugin.id)}`, { image });
-      const info = applyRecognized(res);
+      const info = await applyRecognized(res);
       renderOcrResult(res, info);
       toast(info.filled ? `识别完成，已填充 ${info.filled} 行` : '识别完成，请核对后手动补全', info.filled ? 'ok' : '');
     } catch (err) {
@@ -2459,8 +2685,17 @@ function viewReportForm(id, presetPartId) {
 /* -------------------------------------------------------------------- 快速建订单 */
 
 function openQuickOrder(presetPartId, date) {
-  return new Promise((resolve) => {
-    const part = presetPartId ? state.parts.find((p) => p.id === presetPartId) : null;
+  return (async () => {
+    let part = presetPartId ? partCache.get(presetPartId) : null;
+    if (presetPartId && !part) {
+      try {
+        const data = await api('GET', 'api.php?action=parts.get&id=' + encodeURIComponent(presetPartId));
+        part = cachePart(data.part);
+      } catch (err) {
+        if (err.status === 401) return null;
+      }
+    }
+    return new Promise((resolve) => {
     const { root, close } = openModal(
       `<h3>新建订单</h3>
        <p>订单号会自动生成，创建后自动选中。</p>
@@ -2514,7 +2749,8 @@ function openQuickOrder(presetPartId, date) {
         btn.textContent = '创建并选中';
       }
     });
-  });
+    });
+  })();
 }
 
 /* ==================================================================== 报工统计 */
@@ -2523,20 +2759,21 @@ function multiSelectHtml(id, placeholder) {
   return `<div class="ms" id="${id}">
     <button type="button" class="ms-btn"><span class="ms-label">${esc(placeholder)}</span><span class="ms-caret">▾</span></button>
     <div class="ms-panel" hidden>
-      <div class="ms-search"><input class="input" placeholder="搜索…" autocomplete="off"></div>
-      <div class="ms-actions"><button type="button" data-all>全选</button><button type="button" data-none>清空</button><span class="ms-tip">可多选</span></div>
+      <div class="ms-search"><input class="input" placeholder="输入关键词搜索…" autocomplete="off"></div>
+      <div class="ms-actions"><button type="button" data-none>清空</button><span class="ms-tip">输入即搜索，可多选</span></div>
       <div class="ms-list"></div>
     </div>
   </div>`;
 }
 
-function setupMultiSelect(root, options, selected, onChange, placeholder) {
+/* 远程多选：只拉当前关键词的结果，已选项以标签保留 */
+function setupRemoteMultiSelect(root, searchFn, selected, labels, onChange, placeholder) {
   const btn = root.querySelector('.ms-btn');
   const label = root.querySelector('.ms-label');
   const panel = root.querySelector('.ms-panel');
   const search = root.querySelector('.ms-search input');
   const list = root.querySelector('.ms-list');
-  let keyword = '';
+  let seq = 0;
 
   function updateLabel() {
     const n = selected.size;
@@ -2544,28 +2781,72 @@ function setupMultiSelect(root, options, selected, onChange, placeholder) {
     btn.classList.toggle('has-value', n > 0);
   }
 
-  function renderList() {
-    const q = keyword.trim().toLowerCase();
-    const visible = options.filter((o) => !q || `${o.label} ${o.sub || ''}`.toLowerCase().includes(q));
-    if (!visible.length) {
-      list.innerHTML = '<div class="ms-empty">没有匹配项</div>';
-      return;
-    }
-    list.innerHTML = visible
-      .map(
-        (o) => `<label class="ms-item"><input type="checkbox" value="${esc(o.value)}" ${
-          selected.has(o.value) ? 'checked' : ''
-        }><span class="ms-text"><b>${esc(o.label)}</b>${o.sub ? `<i>${esc(o.sub)}</i>` : ''}</span></label>`
-      )
-      .join('');
+  function bindOptions(items) {
     list.querySelectorAll('input').forEach((cb) => {
       cb.addEventListener('change', () => {
-        if (cb.checked) selected.add(cb.value);
-        else selected.delete(cb.value);
+        const hit = items.find((o) => o.value === cb.value);
+        if (cb.checked) {
+          selected.add(cb.value);
+          if (hit) labels.set(cb.value, { label: hit.label, sub: hit.sub || '' });
+        } else {
+          selected.delete(cb.value);
+        }
         updateLabel();
         onChange();
       });
     });
+  }
+
+  function renderSelectedOnly() {
+    if (!selected.size) {
+      list.innerHTML = '<div class="ms-empty">输入关键词搜索，或直接选择</div>';
+      return;
+    }
+    const items = [...selected].map((id) => {
+      const info = labels.get(id) || { label: id, sub: '' };
+      return { value: id, label: info.label, sub: info.sub };
+    });
+    list.innerHTML = items
+      .map(
+        (o) => `<label class="ms-item"><input type="checkbox" value="${esc(o.value)}" checked><span class="ms-text"><b>${esc(
+          o.label
+        )}</b>${o.sub ? `<i>${esc(o.sub)}</i>` : ''}</span></label>`
+      )
+      .join('');
+    bindOptions(items);
+  }
+
+  async function draw(keyword) {
+    const my = ++seq;
+    list.innerHTML = '<div class="ms-empty">搜索中…</div>';
+    try {
+      const res = await searchFn(keyword);
+      if (my !== seq) return;
+      const found = (res.items || []).map((o) => ({ value: o.value, label: o.label, sub: o.sub || '' }));
+      const shownIds = new Set(found.map((o) => o.value));
+      const extra = [...selected]
+        .filter((id) => !shownIds.has(id))
+        .map((id) => {
+          const info = labels.get(id) || { label: id, sub: '' };
+          return { value: id, label: info.label, sub: info.sub };
+        });
+      const items = extra.concat(found);
+      if (!items.length) {
+        list.innerHTML = '<div class="ms-empty">没有匹配项</div>';
+        return;
+      }
+      list.innerHTML = items
+        .map(
+          (o) => `<label class="ms-item"><input type="checkbox" value="${esc(o.value)}" ${
+            selected.has(o.value) ? 'checked' : ''
+          }><span class="ms-text"><b>${esc(o.label)}</b>${o.sub ? `<i>${esc(o.sub)}</i>` : ''}</span></label>`
+        )
+        .join('');
+      bindOptions(items);
+    } catch (err) {
+      if (my !== seq) return;
+      list.innerHTML = `<div class="ms-empty">${esc(err.message || '搜索失败')}</div>`;
+    }
   }
 
   btn.addEventListener('click', () => {
@@ -2573,34 +2854,35 @@ function setupMultiSelect(root, options, selected, onChange, placeholder) {
     $$('.ms-panel').forEach((p) => (p.hidden = true));
     panel.hidden = !willOpen;
     if (willOpen) {
-      keyword = '';
       search.value = '';
-      renderList();
+      draw('');
       setTimeout(() => search.focus(), 0);
     }
   });
 
-  search.addEventListener('input', () => {
-    keyword = search.value;
-    renderList();
-  });
-
-  root.querySelector('[data-all]').addEventListener('click', () => {
-    options.forEach((o) => selected.add(o.value));
-    renderList();
-    updateLabel();
-    onChange();
-  });
+  search.addEventListener(
+    'input',
+    debounce(() => draw(search.value))
+  );
 
   root.querySelector('[data-none]').addEventListener('click', () => {
     selected.clear();
-    renderList();
+    renderSelectedOnly();
     updateLabel();
     onChange();
   });
 
   updateLabel();
-  renderList();
+}
+
+function statsParams() {
+  const params = new URLSearchParams();
+  if (statRange.from) params.set('from', statRange.from);
+  if (statRange.to) params.set('to', statRange.to);
+  if (statQuery.trim()) params.set('q', statQuery.trim());
+  if (statOrderIds.size) params.set('orderIds', [...statOrderIds].join(','));
+  if (statPartIds.size) params.set('partIds', [...statPartIds].join(','));
+  return params;
 }
 
 function viewStats() {
@@ -2611,31 +2893,7 @@ function viewStats() {
   );
 
   statRange = resolveRange(statRange);
-  const validOrderIds = new Set(state.orders.map((o) => o.id));
-  statOrderIds.forEach((id) => {
-    if (!validOrderIds.has(id)) statOrderIds.delete(id);
-  });
-  const validPartIds = new Set(state.parts.map((p) => p.id));
-  statPartIds.forEach((id) => {
-    if (!validPartIds.has(id)) statPartIds.delete(id);
-  });
-
-  const orderOpts = state.orders.map((o) => {
-    const p = state.parts.find((x) => x.id === o.partId);
-    const partNameText = (p && p.name) || o.partName || '';
-    return {
-      value: o.id,
-      label: o.no,
-      sub: [o.partNo || (p && p.no) || '', partNameText, o.process || '未指定工序', `数量 ${fmtQty(o.qty)}`]
-        .filter(Boolean)
-        .join(' · '),
-    };
-  });
-  const partOpts = state.parts.map((p) => ({
-    value: p.id,
-    label: p.no,
-    sub: `${p.name || ''}${partProcesses(p).length ? `${p.name ? ' · ' : ''}${partProcesses(p).map((x) => x.name).join(' / ')}` : ''}`,
-  }));
+  statStore = newStore();
 
   $('#view').innerHTML = `
     <div class="toolbar stats-filter">
@@ -2648,138 +2906,171 @@ function viewStats() {
     <div class="table-card"><table class="mini-table stats-table" id="stTable"></table></div>
     <div id="stMore"></div>`;
 
-  function collect() {
-    const rows = [];
-    const q = statQuery.trim().toLowerCase();
-    for (const r of state.reports) {
-      if (statRange.from && String(r.date) < statRange.from) continue;
-      if (statRange.to && String(r.date) > statRange.to) continue;
-      for (const it of r.items || []) {
-        const oid = it.orderId || r.orderId;
-        if (statOrderIds.size && !statOrderIds.has(oid)) continue;
-        if (statPartIds.size && !statPartIds.has(it.partId)) continue;
-        if (q) {
-          const hay = [r.no, r.worker, r.orderNo, it.orderNo, it.partNo, it.partName, it.process]
-            .join(' ')
-            .toLowerCase();
-          if (!hay.includes(q)) continue;
-        }
-        rows.push({ report: r, item: it });
-      }
-    }
-    rows.sort((a, b) => String(b.report.date).localeCompare(String(a.report.date)) || String(b.report.no).localeCompare(String(a.report.no)));
-    return rows;
-  }
+  setupRemoteMultiSelect(
+    $('#msOrder'),
+    async (q) => {
+      const params = new URLSearchParams({ limit: '100', q: String(q || '').trim() });
+      const data = await api('GET', 'api.php?action=orders.search&' + params.toString());
+      return {
+        items: (data.items || []).map((o) => ({
+          value: o.id,
+          label: o.no,
+          sub: [o.partNo || '', o.partName || '', o.process || '未指定工序', `数量 ${fmtQty(o.qty)}`]
+            .filter(Boolean)
+            .join(' · '),
+        })),
+      };
+    },
+    statOrderIds,
+    statOrderLabels,
+    () => loadStats(true),
+    '全部订单'
+  );
 
-  function render() {
-    const rows = collect();
-    const qty = round2(rows.reduce((s, x) => s + (Number(x.item.qty) || 0), 0));
-    const amount = round2(rows.reduce((s, x) => s + (Number(x.item.amount) || 0), 0));
-    $('#pageSub').textContent = `${rows.length} 条明细 · 数量 ${fmtQty(qty)} 件 · 金额 ${money(amount)}`;
-    $('#stCards').innerHTML = `
-      <div class="stat"><div class="stat-k">明细条数</div><div class="stat-v">${rows.length}<small>条</small></div></div>
-      <div class="stat"><div class="stat-k">数量合计</div><div class="stat-v">${fmtQty(qty)}<small>件</small></div></div>
-      <div class="stat"><div class="stat-k">金额合计</div><div class="stat-v">${money(amount)}</div></div>`;
-
-    const table = $('#stTable');
-    const moreBox = $('#stMore');
-    if (!rows.length) {
-      table.innerHTML = `<tbody><tr><td class="empty-cell">没有符合条件的报工记录</td></tr></tbody>`;
-      if (moreBox) moreBox.innerHTML = '';
-      return;
-    }
-    const shown = rows.slice(0, statLimit);
-    table.innerHTML = `<thead><tr>
-        <th>日期</th><th>报工单</th><th>订单</th><th class="num">订单数量</th><th>零件</th><th>工序</th>
-        <th class="num">数量</th><th class="num">单价</th><th class="num">金额</th><th>报工人</th>
-      </tr></thead>
-      <tbody>${shown
-        .map((x) => {
-          const oid = x.item.orderId || x.report.orderId;
-          const order = state.orders.find((o) => o.id === oid);
-          const orderQty = order ? fmtQty(order.qty) : '—';
-          return `<tr>
-            <td class="nowrap">${esc(x.report.date)}</td>
-            <td class="nowrap">${esc(x.report.no)}</td>
-            <td class="nowrap">${esc(x.item.orderNo || x.report.orderNo || '—')}</td>
-            <td class="num">${orderQty}</td>
-            <td><div class="pname">${esc(x.item.partNo)}</div><div class="pno">${esc(x.item.partName || '')}</div></td>
-            <td>${esc(x.item.process || '—')}</td>
-            <td class="num">${fmtQty(x.item.qty)}</td>
-            <td class="num">${Number(x.item.price).toFixed(2)}</td>
-            <td class="num">${Number(x.item.amount).toFixed(2)}</td>
-            <td>${esc(x.report.worker)}</td>
-          </tr>`;
-        })
-        .join('')}</tbody>`;
-
-    if (moreBox) {
-      moreBox.innerHTML =
-        rows.length > shown.length
-          ? `<div class="load-more"><button class="btn btn-ghost" id="loadMoreStats">加载更多（还有 ${rows.length - shown.length} 条）</button></div>`
-          : '';
-      const more = $('#loadMoreStats');
-      if (more) {
-        more.addEventListener('click', () => {
-          statLimit += 100;
-          render();
-        });
-      }
-    }
-  }
-
-  render();
-
-  setupMultiSelect($('#msOrder'), orderOpts, statOrderIds, () => {
-    statLimit = 100;
-    render();
-  }, '全部订单');
-  setupMultiSelect($('#msPart'), partOpts, statPartIds, () => {
-    statLimit = 100;
-    render();
-  }, '全部零件');
+  setupRemoteMultiSelect(
+    $('#msPart'),
+    async (q) => {
+      const params = new URLSearchParams({ limit: '50', q: String(q || '').trim() });
+      const data = await api('GET', 'api.php?action=parts.search&' + params.toString());
+      return {
+        items: (data.items || []).map((p) => ({
+          value: p.id,
+          label: p.no,
+          sub: `${p.name || ''}${
+            partProcesses(p).length ? `${p.name ? ' · ' : ''}${partProcesses(p).map((x) => x.name).join(' / ')}` : ''
+          }`,
+        })),
+      };
+    },
+    statPartIds,
+    statPartLabels,
+    () => loadStats(true),
+    '全部零件'
+  );
 
   setupRangeFilter($('#stRange'), statRange, (r) => {
     statRange = r;
-    statLimit = 100;
-    render();
+    loadStats(true);
   });
   $('#stSearch').addEventListener(
     'input',
     debounce((e) => {
       statQuery = e.target.value;
-      statLimit = 100;
-      render();
+      loadStats(true);
     })
   );
 
-  window.__statsCollect = collect;
+  loadStats(true);
+}
+
+async function loadStats(reset) {
+  const table = $('#stTable');
+  if (!table) return;
+  if (reset) {
+    statStore.items = [];
+    statStore.page = 0;
+    statStore.total = 0;
+    statStore.hasMore = false;
+    table.innerHTML = '<tbody><tr><td class="empty-cell">加载中…</td></tr></tbody>';
+  }
+  const my = ++statStore.seq;
+  try {
+    const params = statsParams();
+    params.set('page', String(statStore.page + 1));
+    params.set('pageSize', '100');
+    const data = await api('GET', 'api.php?action=stats.list&' + params.toString());
+    if (my !== statStore.seq) return;
+    const list = data.items || [];
+    statStore.items = reset ? list : statStore.items.concat(list);
+    statStore.total = Number(data.total) || 0;
+    statStore.page = Number(data.page) || 1;
+    statStore.hasMore = !!data.hasMore;
+    statStore.summary = data.summary || { rows: statStore.total, qty: 0, amount: 0 };
+    renderStats();
+  } catch (err) {
+    if (my !== statStore.seq) return;
+    if (err.status !== 401) toast(err.message, 'err');
+    if (reset) {
+      table.innerHTML = `<tbody><tr><td class="empty-cell">${esc(err.message || '读取统计失败')}</td></tr></tbody>`;
+    }
+  }
+}
+
+function renderStats() {
+  const table = $('#stTable');
+  if (!table) return;
+  const rows = statStore.items;
+  const sum = statStore.summary || { rows: 0, qty: 0, amount: 0 };
+  $('#pageSub').textContent = `${fmtQty(sum.rows)} 条明细 · 数量 ${fmtQty(sum.qty)} 件 · 金额 ${money(sum.amount)}`;
+  $('#stCards').innerHTML = `
+    <div class="stat"><div class="stat-k">明细条数</div><div class="stat-v">${fmtQty(sum.rows)}<small>条</small></div></div>
+    <div class="stat"><div class="stat-k">数量合计</div><div class="stat-v">${fmtQty(sum.qty)}<small>件</small></div></div>
+    <div class="stat"><div class="stat-k">金额合计</div><div class="stat-v">${money(sum.amount)}</div></div>`;
+
+  if (!rows.length) {
+    table.innerHTML = `<tbody><tr><td class="empty-cell">没有符合条件的报工记录</td></tr></tbody>`;
+    $('#stMore').innerHTML = '';
+    return;
+  }
+
+  table.innerHTML = `<thead><tr>
+      <th>日期</th><th>报工单</th><th>订单</th><th class="num">订单数量</th><th>零件</th><th>工序</th>
+      <th class="num">数量</th><th class="num">单价</th><th class="num">金额</th><th>报工人</th>
+    </tr></thead>
+    <tbody>${rows
+      .map(
+        (x) => `<tr>
+          <td class="nowrap">${esc(x.date)}</td>
+          <td class="nowrap">${esc(x.reportNo)}</td>
+          <td class="nowrap">${esc(x.orderNo || '—')}</td>
+          <td class="num">${x.orderQty === '' ? '—' : fmtQty(x.orderQty)}</td>
+          <td><div class="pname">${esc(x.partNo)}</div><div class="pno">${esc(x.partName || '')}</div></td>
+          <td>${esc(x.process || '—')}</td>
+          <td class="num">${fmtQty(x.qty)}</td>
+          <td class="num">${Number(x.price).toFixed(2)}</td>
+          <td class="num">${Number(x.amount).toFixed(2)}</td>
+          <td>${esc(x.worker)}</td>
+        </tr>`
+      )
+      .join('')}</tbody>`;
+
+  $('#stMore').innerHTML = statStore.hasMore
+    ? `<div class="load-more"><button class="btn btn-ghost" id="loadMoreStats">加载更多（还有 ${fmtQty(
+        statStore.total - rows.length
+      )} 条）</button></div>`
+    : '';
+  const more = $('#loadMoreStats');
+  if (more) {
+    more.addEventListener('click', () => {
+      if (statStore.hasMore) loadStats(false);
+    });
+  }
 }
 
 async function viewDataStats() {
-  const itemsCount = state.reports.reduce((s, r) => s + (r.items || []).length, 0);
-  const years = new Map();
-  for (const r of state.reports) {
-    const y = String(r.date || '').slice(0, 4) || '未知';
-    const e = years.get(y) || { reports: 0, items: 0, qty: 0, amount: 0 };
-    e.reports++;
-    for (const it of r.items || []) {
-      e.items++;
-      e.qty += Number(it.qty) || 0;
-      e.amount += Number(it.amount) || 0;
-    }
-    years.set(y, e);
-  }
-  const yearRows = [...years.entries()].sort((a, b) => b[0].localeCompare(a[0]));
-  const firstDate = state.reports.reduce((min, r) => (r.date && (!min || r.date < min) ? r.date : min), '');
+  setHead('数据量统计', '统计中…');
+  $('#view').innerHTML = '<p class="hint">正在汇总数据…</p>';
 
+  let overview;
+  try {
+    overview = await api('GET', 'api.php?action=stats.overview');
+  } catch (err) {
+    if (err.status === 401) return;
+    $('#view').innerHTML = `<p class="hint">读取数据量失败：${esc(err.message || '请稍后重试')}</p>`;
+    return;
+  }
+  if (location.hash !== '#/data') return;
+
+  const counts = overview.counts || { parts: 0, orders: 0, reports: 0, items: 0 };
+  const yearRows = overview.years || [];
+  const firstDate = overview.firstDate || '';
   setHead('数据量统计', firstDate ? `数据从 ${firstDate} 开始` : '还没有报工数据');
 
   const yearTbody = yearRows.length
     ? yearRows
         .map(
-          ([y, e]) => `<tr>
-            <td>${esc(y)}</td>
+          (e) => `<tr>
+            <td>${esc(e.year)}</td>
             <td class="num">${fmtQty(e.reports)}</td>
             <td class="num">${fmtQty(e.items)}</td>
             <td class="num">${fmtQty(round2(e.qty))}</td>
@@ -2791,10 +3082,10 @@ async function viewDataStats() {
 
   $('#view').innerHTML = `
     <div class="stats data-stats">
-      <div class="stat"><div class="stat-k">零件</div><div class="stat-v">${fmtQty(state.parts.length)}<small>个</small></div></div>
-      <div class="stat"><div class="stat-k">订单</div><div class="stat-v">${fmtQty(state.orders.length)}<small>张</small></div></div>
-      <div class="stat"><div class="stat-k">报工单</div><div class="stat-v">${fmtQty(state.reports.length)}<small>张</small></div></div>
-      <div class="stat"><div class="stat-k">报工明细</div><div class="stat-v">${fmtQty(itemsCount)}<small>条</small></div></div>
+      <div class="stat"><div class="stat-k">零件</div><div class="stat-v">${fmtQty(counts.parts)}<small>个</small></div></div>
+      <div class="stat"><div class="stat-k">订单</div><div class="stat-v">${fmtQty(counts.orders)}<small>张</small></div></div>
+      <div class="stat"><div class="stat-k">报工单</div><div class="stat-v">${fmtQty(counts.reports)}<small>张</small></div></div>
+      <div class="stat"><div class="stat-k">报工明细</div><div class="stat-v">${fmtQty(counts.items)}<small>条</small></div></div>
     </div>
     <div class="stats data-disk">
       <div class="stat"><div class="stat-k">数据文件</div><div class="stat-v" id="dsDb">—</div><div class="stat-sub" id="dsDbSub">统计中…</div></div>
@@ -2833,35 +3124,109 @@ async function viewDataStats() {
 }
 
 function exportStats() {
-  const rows = window.__statsCollect ? window.__statsCollect() : [];
-  if (!rows.length) return toast('没有可导出的数据', 'err');
-  const out = [['日期', '报工单号', '订单号', '订单数量', '报工人', '零件图号', '零件名称', '工序', '数量', '单价(元)', '金额(元)']];
-  for (const x of rows) {
-    const oid = x.item.orderId || x.report.orderId;
-    const order = state.orders.find((o) => o.id === oid);
-    out.push([
-      x.report.date,
-      x.report.no,
-      x.item.orderNo || x.report.orderNo || '',
-      order ? order.qty : '',
-      x.report.worker,
-      x.item.partNo,
-      x.item.partName,
-      x.item.process,
-      x.item.qty,
-      x.item.price,
-      x.item.amount,
-    ]);
-  }
-  downloadText(`报工统计_${statRange.from || '全部'}_${statRange.to || '全部'}.csv`, csvText(out));
+  const params = statsParams();
+  const a = document.createElement('a');
+  a.href = 'api.php?action=export.stats' + (params.toString() ? '&' + params.toString() : '');
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
 
 /* ==================================================================== 操作 */
 
+function openPartImage(id) {
+  const part = partCache.get(id) || partStore.items.find((p) => p.id === id);
+  if (!part || !part.image) return;
+  const { root, close } = openModal(`<h3>${esc(part.no)}${part.name ? ` · ${esc(part.name)}` : ''}</h3>
+    <div class="part-zoom"><img src="${esc(imgUrl(part.image))}" alt="${esc(part.name || part.no)}"></div>
+    <div class="modal-actions"><button class="btn btn-ghost" data-cancel>关闭</button></div>`);
+  root.querySelector('[data-cancel]').addEventListener('click', () => close());
+}
+
+async function openPartDrawings(id) {
+  let part = partCache.get(id) || null;
+  if (!part) {
+    try {
+      const data = await api('GET', 'api.php?action=parts.get&id=' + encodeURIComponent(id));
+      part = cachePart(data.part);
+    } catch (err) {
+      if (err.status !== 401) toast(err.message, 'err');
+      return;
+    }
+  }
+  const ds = Array.isArray(part.drawings) ? part.drawings.slice() : [];
+  if (!ds.length) {
+    toast('这个零件还没有图纸', 'err');
+    return;
+  }
+  const { close } = openModal(`<h3>${esc(partLabel(part) || part.no)} 图纸（${ds.length}）</h3>
+    <div class="drawing-modal-list">${ds
+      .map((d, i) => {
+        const thumb =
+          d.type === 'pdf'
+            ? '<span class="dthumb pdf">PDF</span>'
+            : `<img class="dthumb" src="${esc(imgUrl(d.path))}" alt="">`;
+        return `<div class="drawing-item">${thumb}<span class="dname">${esc(d.name)}</span>
+          <span class="dtype">${d.type === 'pdf' ? 'PDF' : '图片'}</span>
+          <button type="button" class="btn btn-ghost btn-sm" data-draw-view="${i}">查看</button>
+          <button type="button" class="icon-btn danger" data-draw-remove="${i}" title="删除">${icon('trash', 15)}</button></div>`;
+      })
+      .join('')}</div>
+    <div class="drawing-preview" id="drawingPreview" hidden></div>
+    <div class="modal-actions"><button class="btn btn-ghost" data-cancel>关闭</button></div>`);
+
+  const root = $('#modalRoot');
+  root.querySelector('[data-cancel]').addEventListener('click', () => close());
+  root.querySelectorAll('[data-draw-view]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const d = ds[Number(btn.dataset.drawView)];
+      if (!d) return;
+      if (d.type === 'pdf') {
+        window.open(imgUrl(d.path), '_blank', 'noopener');
+        return;
+      }
+      const box = $('#drawingPreview');
+      box.hidden = false;
+      box.innerHTML = `<img src="${esc(imgUrl(d.path))}" alt="${esc(d.name)}"><div class="hint">${esc(d.name)}</div>`;
+      box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
+  });
+  root.querySelectorAll('[data-draw-remove]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const d = ds[Number(btn.dataset.drawRemove)];
+      if (!d) return;
+      const ok = await confirmDialog({
+        title: '删除这张图纸？',
+        message: `「${d.name}」会从服务器删除，无法恢复。`,
+        okText: '删除图纸',
+        danger: true,
+      });
+      if (!ok) return;
+      try {
+        const data = await api('POST', 'api.php?action=part.drawing.remove&id=' + encodeURIComponent(id), { path: d.path });
+        cachePart(data.part);
+        toast('图纸已删除', 'ok');
+        close();
+        await openPartDrawings(id);
+        if (location.hash.indexOf('#/parts') === 0) route();
+      } catch (err) {
+        if (err.status !== 401) toast(err.message, 'err');
+      }
+    });
+  });
+}
+
 async function deletePart(id) {
-  const part = state.parts.find((p) => p.id === id);
-  if (!part) return;
-  const u = buildUsage().get(id) || { times: 0, qty: 0 };
+  let part;
+  try {
+    const data = await api('GET', 'api.php?action=parts.get&id=' + encodeURIComponent(id));
+    part = data.part;
+  } catch (err) {
+    if (err.status !== 401) toast(err.message, 'err');
+    return;
+  }
+  const u = part.usage || { times: 0, qty: 0 };
   const ok = await confirmDialog({
     title: '删除这个零件？',
     message: u.times
@@ -2882,8 +3247,14 @@ async function deletePart(id) {
 }
 
 async function deleteReport(id) {
-  const rep = state.reports.find((r) => r.id === id);
-  if (!rep) return;
+  let rep;
+  try {
+    const data = await api('GET', 'api.php?action=reports.get&id=' + encodeURIComponent(id));
+    rep = data.report;
+  } catch (err) {
+    if (err.status !== 401) toast(err.message, 'err');
+    return;
+  }
   const ok = await confirmDialog({
     title: '删除这张报工单？',
     message: `${rep.no}（${rep.date}，${rep.worker}）将被删除，删除后无法恢复。`,
@@ -2902,8 +3273,14 @@ async function deleteReport(id) {
 }
 
 async function deleteOrder(id) {
-  const order = state.orders.find((o) => o.id === id);
-  if (!order) return;
+  let order;
+  try {
+    const data = await api('GET', 'api.php?action=orders.get&id=' + encodeURIComponent(id));
+    order = data.order;
+  } catch (err) {
+    if (err.status !== 401) toast(err.message, 'err');
+    return;
+  }
   const stat = orderReported(order);
   const ok = await confirmDialog({
     title: '删除这张订单？',
@@ -3118,9 +3495,8 @@ async function logout() {
   try {
     await api('POST', 'api.php?action=logout', {});
   } catch {}
-  state.parts = [];
-  state.reports = [];
-  state.orders = [];
+  state.counts = { parts: 0, orders: 0, reports: 0, items: 0 };
+  partCache.clear();
   showLogin();
 }
 
@@ -3425,6 +3801,8 @@ document.addEventListener('click', async (e) => {
     const id = actEl.dataset.id;
     if (act === 'part-edit') location.hash = `#/parts/${id}/edit`;
     else if (act === 'part-report') location.hash = `#/reports/new?part=${id}`;
+    else if (act === 'part-image') openPartImage(id);
+    else if (act === 'part-drawings') openPartDrawings(id);
     else if (act === 'part-del') deletePart(id);
     else if (act === 'order-edit') location.hash = `#/orders/${id}/edit`;
     else if (act === 'order-del') deleteOrder(id);
