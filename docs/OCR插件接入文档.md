@@ -1,8 +1,8 @@
 # OCR 识别插件 · 开发与接入文档
 
-> 适用版本：v2.1（2026-11-20）
+> 适用版本：v2.5（2026-11-21）
 > 相关代码：`public/api.php`（插件调度）、`public/lib/net.php`（自检与出网）、`public/plugins/`（插件目录）
-> 参考实现：`plugins/mock-ocr/`（最小示例）、`plugins/baidu-ocr/`（真实接入）
+> 参考实现：`plugins/mock-ocr/`（最小示例）、`plugins/baidu-ocr/`（百度通用 OCR，含超时重试）、`plugins/qwen35-ocr/`（千问多模态，含文本兜底解析）、`plugins/ocr-ensemble/`（多路融合）
 
 ---
 
@@ -36,7 +36,7 @@ public/plugins/my-ocr/
 └── check.php       自检脚本（可选，文件名由 check 指定）
 ```
 
-最小可用插件只要 `plugin.json` + `handler.php` 两个文件。
+最小可用插件只要 `plugin.json` + `handler.php` 两个文件。目录里还可以放公共 PHP 文件（如 `qwen35-ocr` 的 `shared.php`），由 handler / check 手动 `require`，接口不会自动加载。
 
 ---
 
@@ -298,7 +298,7 @@ return array(
 4. 填写密钥等设置并保存（`password` 保存后回显 `********`）。
 5. 点「API 链接测试」跑 `check.php`；外网问题可用「互联网连接测试」进一步定位。
 6. 启用插件，在「新增报工 → 拍照识别」上传一张单子验证结果面板。
-7. 若同一能力有多个插件，可在设置页切换启用项（`data/plugins.json` 记录状态）。
+7. 同一能力有多个插件时，可在设置页「识别引擎」选择默认识别引擎（默认「自动」，优先使用融合引擎），拍照识别处也能临时切换；启用状态记录在 `data/plugins.json`。
 
 ---
 
@@ -323,5 +323,5 @@ return array(
 - 脚本第一行做 `BG_PLUGIN_CTX` 检查，防止被直接访问。
 - 密钥只存服务器 `data/plugins.json`，不要写进代码、不要返回给前端。
 - 图片 dataURL 可能很大，解析前先校验前缀与长度。
-- 外部请求设置超时（建议 ≤15 秒），失败抛出可读的中文错误。
+- 外部请求设置超时（建议 15–25 秒），并对超时 / 连接中断类瞬时错误做有限次重试（参考 `baidu-ocr`：25 秒超时、最多重试 1 次，HTTP 错误与业务错误不重试），失败抛出可读的中文错误。
 - 插件版本独立于系统版本号；升级系统不覆盖 `plugins/` 下的自定义插件。
