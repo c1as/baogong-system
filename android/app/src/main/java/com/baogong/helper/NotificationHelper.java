@@ -59,19 +59,6 @@ public final class NotificationHelper {
                 == PackageManager.PERMISSION_GRANTED;
     }
 
-    /** 供前台服务 startForeground 使用（targetSdk 34 要求） */
-    public static android.app.Notification buildForegroundNotification(Context context,
-                                                                       String channel,
-                                                                       String title, String text) {
-        return new NotificationCompat.Builder(context, channel)
-                .setSmallIcon(android.R.drawable.stat_sys_download)
-                .setContentTitle(title)
-                .setContentText(text)
-                .setOngoing(true)
-                .setOnlyAlertOnce(true)
-                .build();
-    }
-
     /**
      * @param max 大于 0 时显示进度条；等于 0 时为不确定进度
      */

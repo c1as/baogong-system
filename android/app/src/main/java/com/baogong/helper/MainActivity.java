@@ -392,9 +392,9 @@ public class MainActivity extends Activity {
         box.addView(retry, retryLp);
 
         Button vpn = new Button(this);
-        vpn.setText("网络设置（VPN / 组网）");
+        vpn.setText("设置 VPN 隧道");
         vpn.setOnClickListener(v -> startActivity(
-                new Intent(MainActivity.this, NetworkSettingsActivity.class)));
+                new Intent(MainActivity.this, VpnSettingsActivity.class)));
         LinearLayout.LayoutParams vpnLp = new LinearLayout.LayoutParams(WRAP, WRAP);
         vpnLp.topMargin = dp(8);
         box.addView(vpn, vpnLp);
@@ -556,7 +556,7 @@ public class MainActivity extends Activity {
                 httpsOnly() ? "仅允许 HTTPS（开）" : "仅允许 HTTPS（关）");
         https.setCheckable(true);
         https.setChecked(httpsOnly());
-        menu.add(0, MENU_VPN, 3, "网络设置（WireGuard / EasyTier）");
+        menu.add(0, MENU_VPN, 3, "VPN 隧道设置");
         MenuItem push = menu.add(0, MENU_PUSH, 4,
                 pushEnabled() ? "消息推送（开）" : "消息推送（关）");
         push.setCheckable(true);
@@ -583,7 +583,7 @@ public class MainActivity extends Activity {
             return true;
         }
         if (id == MENU_VPN) {
-            startActivity(new Intent(this, NetworkSettingsActivity.class));
+            startActivity(new Intent(this, VpnSettingsActivity.class));
             return true;
         }
         if (id == MENU_PUSH) {

@@ -2,7 +2,5 @@
 <resources>
     <string name="app_name">报工助手</string>
     <string name="vpn_title">VPN 隧道设置</string>
-    <string name="network_title">网络设置</string>
-    <string name="easytier_title">EasyTier 配置</string>
     <string name="splash_hint">正在连接报工系统…</string>
 </resources>
