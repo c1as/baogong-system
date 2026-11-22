@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  V2 网络安全配置。
+  默认允许明文 HTTP：内网部署（192.168.x.x）离不卡 http://。
+  App 内「仅允许 HTTPS」开关开启后，会在代码层拦截所有 http:// 主文档请求。
+  若整套管网全部部署 HTTPS，把下面 base-config 的 cleartextTrafficPermitted 改成 false，
+  即可由系统层面彻底禁止明文流量（此时内网 HTTP 地址将无法打开）。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <!-- 只部署 HTTPS 时可启用这段，对指定域名强制加密：
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">bg.example.com</domain>
+    </domain-config>
+    -->
+</network-security-config>

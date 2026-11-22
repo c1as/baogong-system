@@ -1,9 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="AppTheme" parent="@android:style/Theme.Material.Light.DarkActionBar">
+    <!-- 主界面：去掉系统 ActionBar，改由代码构建 android.widget.Toolbar，
+         这样才能在 Android 15 边到边显示下正确处理状态栏 insets -->
+    <style name="AppTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
         <item name="android:colorPrimary">#1F6FEB</item>
         <item name="android:colorPrimaryDark">#12407F</item>
         <item name="android:colorAccent">#1F6FEB</item>
         <item name="android:windowBackground">#FFFFFF</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+
+    <!-- V2 启动页主题：纯品牌色窗口背景，避免冷启动白屏 -->
+    <style name="SplashTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@drawable/splash_background</item>
+        <item name="android:statusBarColor">#1F6FEB</item>
+        <item name="android:navigationBarColor">#FFFFFF</item>
+        <item name="android:windowLightStatusBar">false</item>
     </style>
 </resources>
