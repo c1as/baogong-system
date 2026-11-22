@@ -14,7 +14,7 @@
       "label": "参与融合的引擎",
       "type": "multiselect",
       "source": "ocrEngines",
-      "default": "baidu-ocr,qwen35-ocr",
+      "default": "baidu-ocr,qwen35-ocr,mimo-v26-flash",
       "hint": "勾选参与交叉校验的识别插件；留空则自动纳入全部已启用的识别引擎"
     },
     {

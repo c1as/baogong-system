@@ -218,6 +218,115 @@ function ocrens_proc_same($a, $b, $threshold)
     return strlen($short) >= 2 && strpos($long, $short) !== false;
 }
 
+/* 原文里的串与库内图号是否同源：允许 1~2 位字母前缀差异，也允许手写多/少一两个字符 */
+function ocrens_run_supports($run, $noC)
+{
+    if ($run === '' || $noC === '') {
+        return false;
+    }
+    if (ocrens_part_same($run, $noC)) {
+        return true;
+    }
+    if (strlen($run) >= 5 && strpos($noC, $run) !== false) {
+        return true;
+    }
+    if (strlen($noC) >= 5 && strpos($run, $noC) !== false) {
+        return true;
+    }
+    if (abs(strlen($run) - strlen($noC)) > 3) {
+        return false;
+    }
+    return ocrens_dice($run, $noC) >= 0.75;
+}
+
+/* 判断图号能否在该引擎原文中找到依据（防止引擎按零件库"猜"出原文没有的图号） */
+function ocrens_literal_support($part, $rawCompact, $rawRuns = array())
+{
+    if ($part === '' || ($rawCompact === '' && !$rawRuns)) {
+        return true;
+    }
+    if ($rawCompact !== '' && strpos($rawCompact, $part) !== false) {
+        return true;
+    }
+    foreach ($rawRuns as $run) {
+        if (ocrens_run_supports($run, $part)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* 原文中图号样式的连续串（保留分隔符，避免日期、数量粘在一起） */
+function ocrens_raw_runs($raw)
+{
+    $s = (string)$raw;
+    $s = function_exists('mb_strtoupper') ? mb_strtoupper($s, 'UTF-8') : strtoupper($s);
+    $out = array();
+    if (preg_match_all('/[0-9A-Z]{5,}/', $s, $m)) {
+        foreach ($m[0] as $run) {
+            $out[$run] = $run;
+        }
+    }
+    return $out;
+}
+
+/* 零件库索引：去分隔符图号 → 库内原始写法 */
+function ocrens_catalog_index($catalog)
+{
+    $out = array();
+    foreach ($catalog as $p) {
+        if (!is_array($p)) {
+            continue;
+        }
+        $no = isset($p['no']) ? trim((string)$p['no']) : '';
+        $noC = ocrens_compact($no);
+        if ($noC === '' || isset($out[$noC])) {
+            continue;
+        }
+        $out[$noC] = $no;
+    }
+    return $out;
+}
+
+/* 各路原文里确有佐证的库内图号（含前缀差异、手写多字少字），作为图号校正候选 */
+function ocrens_catalog_supported($index, $rawRuns)
+{
+    $out = array();
+    foreach ($rawRuns as $run) {
+        foreach ($index as $noC => $noRaw) {
+            if ($noC === '') {
+                continue;
+            }
+            if (ocrens_run_supports($run, $noC)) {
+                $out[$noC] = $noRaw;
+            }
+        }
+    }
+    return $out;
+}
+
+/* 用零件库校正图号：精确命中直接用，否则取原文佐证候选中最接近的一个 */
+function ocrens_lib_part($part, $index, $supported, $minDice)
+{
+    if ($part === '' || !$index) {
+        return '';
+    }
+    if (isset($index[$part])) {
+        return $index[$part];
+    }
+    $best = '';
+    $bestScore = 0.0;
+    foreach ($supported as $noC => $noRaw) {
+        $d = ocrens_dice($part, $noC);
+        if ($d < $minDice || $d <= $bestScore) {
+            continue;
+        }
+        $bestScore = $d;
+        $best = $noRaw;
+    }
+    return $best;
+}
+
 /**
  * 文本字段投票：按相似度聚类，累计引擎置信度作为支持权重，
  * 取累计权重最大的簇；代表值取簇内置信度最高的那条。
@@ -489,7 +598,8 @@ foreach ($results as $r) {
         $target = null;
         if ($kind !== '') {
             foreach ($groups as $gi => $g) {
-                if ($g['kind'] !== $kind) {
+                /* 同一路引擎在这一组里已有行，说明它确实报了多行（如 铣1 / 铣2），另起一组 */
+                if ($g['kind'] !== $kind || isset($g['rows'][$engineId])) {
                     continue;
                 }
                 $same = $kind === 'no'
@@ -506,14 +616,98 @@ foreach ($results as $r) {
             $groups[] = array('kind' => $kind, 'part' => $part, 'proc' => $proc, 'rows' => array());
             $target = count($groups) - 1;
         }
-        if (!isset($groups[$target]['rows'][$engineId]) || $r['confidence'] > $groups[$target]['rows'][$engineId]['conf']) {
-            $groups[$target]['rows'][$engineId] = array('row' => $it, 'conf' => $r['confidence'], 'engine' => $r['name']);
+        /* 缺工序的一行被别的引擎补上工序后，组内后续行才能按工序正确区分 */
+        if ($groups[$target]['proc'] === '' && $proc !== '') {
+            $groups[$target]['proc'] = $proc;
+        }
+        $conf = (float)$r['confidence'];
+        if (!isset($groups[$target]['rows'][$engineId]) || $conf > $groups[$target]['rows'][$engineId]['conf']) {
+            $groups[$target]['rows'][$engineId] = array(
+                'row' => $it,
+                'conf' => $conf,
+                'engine' => $r['name'],
+                'id' => $engineId,
+            );
         }
     }
 }
 
+/* 单路独有、且图号在该路原文中找不到依据的行，多为引擎按零件库推测，丢弃以免填错 */
+$rawByEngine = array();
+foreach ($results as $r) {
+    $engineId = isset($r['plugin']['id']) ? $r['plugin']['id'] : $r['name'];
+    $raw = isset($r['raw']) ? (string)$r['raw'] : '';
+    $rawByEngine[$engineId] = array(
+        'compact' => ocrens_compact($raw),
+        'runs' => ocrens_raw_runs($raw),
+    );
+}
+$dropped = array();
+foreach ($groups as $gi => $g) {
+    if (count($g['rows']) !== 1 || $g['kind'] !== 'no' || $g['part'] === '') {
+        continue;
+    }
+    $only = reset($g['rows']);
+    $rawInfo = isset($rawByEngine[$only['id']]) ? $rawByEngine[$only['id']] : array('compact' => '', 'runs' => array());
+    if (ocrens_literal_support($g['part'], $rawInfo['compact'], $rawInfo['runs'])) {
+        continue;
+    }
+    $dropped[] = $only['engine'] . '=' . $g['part'];
+    unset($groups[$gi]);
+}
+if ($dropped) {
+    $groups = array_values($groups);
+    $warnings[] = '已忽略 ' . count($dropped) . ' 行原文中查不到的识别结果（'
+        . implode(' / ', array_slice($dropped, 0, 2))
+        . '），可能是引擎按零件库推测，请以原文为准';
+}
+
+/* 图号按零件库校正：各路识别成 26971B05 / 25971305 的同一行，
+   只要原文里有 24971B05 的依据，就归到库内 L24971B05，并合并成一行 */
+$catalog = isset($ctx['catalog']) && is_array($ctx['catalog']) ? $ctx['catalog'] : array();
+$libIndex = ocrens_catalog_index($catalog);
+$rawRuns = array();
+foreach ($results as $r) {
+    foreach (ocrens_raw_runs(isset($r['raw']) ? $r['raw'] : '') as $run) {
+        $rawRuns[$run] = $run;
+    }
+}
+$libSupported = $libIndex ? ocrens_catalog_supported($libIndex, $rawRuns) : array();
+foreach ($groups as $gi => $g) {
+    $groups[$gi]['canon'] = ($g['kind'] === 'no' && $libSupported)
+        ? ocrens_lib_part($g['part'], $libIndex, $libSupported, 0.5)
+        : '';
+}
+$mergedGroups = array();
+foreach ($groups as $g) {
+    $target = null;
+    if ($g['canon'] !== '') {
+        foreach ($mergedGroups as $mi => $m) {
+            /* 同一零件还要工序对得上才合并，避免把 铣1 / 铣2 并成一行 */
+            if ($m['canon'] === $g['canon'] && ocrens_proc_same($m['proc'], $g['proc'], $agreeThreshold)) {
+                $target = $mi;
+                break;
+            }
+        }
+    }
+    if ($target === null) {
+        $mergedGroups[] = $g;
+        continue;
+    }
+    foreach ($g['rows'] as $engineId => $row) {
+        if (!isset($mergedGroups[$target]['rows'][$engineId]) || $row['conf'] > $mergedGroups[$target]['rows'][$engineId]['conf']) {
+            $mergedGroups[$target]['rows'][$engineId] = $row;
+        }
+    }
+    if ($mergedGroups[$target]['proc'] === '' && $g['proc'] !== '') {
+        $mergedGroups[$target]['proc'] = $g['proc'];
+    }
+}
+$groups = $mergedGroups;
+
 $items = array();
 $rowDisagreements = array();
+$corrections = array();
 $rowNo = 0;
 foreach ($groups as $group) {
     $rowNo++;
@@ -568,8 +762,26 @@ foreach ($groups as $group) {
         }
     }
 
+    /* 库内能确认的图号以库内写法为准，避免各路都读错时投票选出不存在的图号 */
+    $partNoValue = $partNo['value'];
+    $canon = isset($group['canon']) ? $group['canon'] : '';
+    if ($canon !== '') {
+        $canonKey = ocrens_compact($canon);
+        $seenRead = array();
+        foreach ($rows as $row) {
+            $read = isset($row['row']['partNo']) ? trim((string)$row['row']['partNo']) : '';
+            $readKey = ocrens_compact($read);
+            if ($readKey === '' || $readKey === $canonKey || ocrens_part_same($readKey, $canonKey) || isset($seenRead[$readKey])) {
+                continue;
+            }
+            $seenRead[$readKey] = true;
+            $corrections[] = $read . '→' . $canon;
+        }
+        $partNoValue = $canon;
+    }
+
     $items[] = array(
-        'partNo' => $partNo['value'],
+        'partNo' => $partNoValue,
         'partName' => $partName['value'],
         'process' => $process['value'],
         'qty' => $qty['value'] === null ? 0 : $qty['value'],
@@ -577,7 +789,12 @@ foreach ($groups as $group) {
     );
 
     $diff = array();
-    foreach (array('图号' => $partNo, '名称' => $partName, '工序' => $process, '数量' => $qty, '单价' => $price) as $label => $v) {
+    $labels = array('图号' => $partNo, '名称' => $partName, '工序' => $process, '数量' => $qty, '单价' => $price);
+    if ($canon !== '') {
+        /* 图号已按零件库校正，不再重复报告各路的读法差异 */
+        unset($labels['图号']);
+    }
+    foreach ($labels as $label => $v) {
         if ($v['total'] <= 0 || $v['support'] >= $v['total'] - 1e-9) {
             continue;
         }
@@ -616,6 +833,9 @@ foreach ($disagreements as $w) {
 }
 foreach ($rowDisagreements as $w) {
     $warnings[] = $w;
+}
+if ($corrections) {
+    $warnings[] = '图号已按零件库校正：' . implode(' / ', array_slice($corrections, 0, 3));
 }
 if (!$items) {
     $warnings[] = '未识别出报工明细，可对照下方原文手动填充';

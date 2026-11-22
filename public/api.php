@@ -2236,6 +2236,7 @@ function bg_plugin_invoke($id, $dataUrl)
 {
     global $BG_PLUGIN_CTX;
     $m = bg_plugin_one($id);
+    $bgStart = microtime(true);
 
     if (!bg_plugin_is_enabled($id)) {
         bg_fail(400, '该识别插件已停用，请先在设置页启用');
@@ -2251,7 +2252,9 @@ function bg_plugin_invoke($id, $dataUrl)
     $db = bg_db_load();
     $catalog = array();
     foreach ($db['parts'] as $p) {
-        if (count($catalog) >= 300) {
+        /* 传全量零件库：各引擎按自己的 catalogLimit 决定塞多少进提示词，
+           融合引擎则用全量做图号校正（只取前几百条会让冷门图号永远匹配不上） */
+        if (count($catalog) >= 8000) {
             break;
         }
         $names = array();
@@ -2292,6 +2295,9 @@ function bg_plugin_invoke($id, $dataUrl)
 
     $result = bg_plugin_normalize_result($out);
     $result['plugin'] = array('id' => $m['id'], 'name' => $m['name'], 'version' => $m['version']);
+    if ($m['id'] !== 'ocr-log') {
+        bg_log_ocr($result, (int)round((microtime(true) - $bgStart) * 1000), 'ocr', $dataUrl);
+    }
     return $result;
 }
 
@@ -2302,6 +2308,7 @@ function bg_plugin_invoke($id, $dataUrl)
 function bg_plugin_invoke_engine($id, $ctx)
 {
     global $BG_PLUGIN_CTX, $BG_THROW;
+    $bgStart = microtime(true);
     if (!is_string($id) || !preg_match('/^[a-z0-9][a-z0-9-]{0,31}$/', $id)) {
         throw new RuntimeException('引擎标识不合法');
     }
@@ -2351,12 +2358,155 @@ function bg_plugin_invoke_engine($id, $ctx)
     }
     $result = bg_plugin_normalize_result($out);
     $result['plugin'] = array('id' => $m['id'], 'name' => $m['name'], 'version' => $m['version']);
+    bg_log_ocr(
+        $result,
+        (int)round((microtime(true) - $bgStart) * 1000),
+        'engine',
+        isset($child['image']) ? $child['image'] : ''
+    );
     return $result;
 }
 
 function bg_part_processes($p)
 {
     return (isset($p['processes']) && is_array($p['processes'])) ? $p['processes'] : array();
+}
+
+/* ---------------- 识别日志（由 ocr-log 插件开关控制） ---------------- */
+
+function bg_log_cfg()
+{
+    static $cfg = null;
+    if ($cfg !== null) {
+        return $cfg;
+    }
+    $all = bg_plugin_all();
+    if (!isset($all['ocr-log']) || !bg_plugin_is_enabled('ocr-log')) {
+        $cfg = false;
+        return $cfg;
+    }
+    $cfg = bg_plugin_config($all['ocr-log']);
+    return $cfg;
+}
+
+function bg_log_dir()
+{
+    global $DATA_DIR;
+    return $DATA_DIR . '/ocr-logs';
+}
+
+function bg_log_write($entry)
+{
+    $cfg = bg_log_cfg();
+    if ($cfg === false || !is_array($entry)) {
+        return;
+    }
+    $dir = bg_log_dir();
+    if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
+        return;
+    }
+    $entry = array('ts' => date('Y-m-d H:i:s')) + $entry;
+    $line = @json_encode($entry, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($line === false) {
+        return;
+    }
+    @file_put_contents($dir . '/' . date('Y-m-d') . '.jsonl', $line . "\n", FILE_APPEND | LOCK_EX);
+
+    $keep = isset($cfg['keepDays']) && is_numeric($cfg['keepDays']) ? (int)$cfg['keepDays'] : 14;
+    if ($keep < 1) {
+        $keep = 1;
+    }
+    $cut = time() - $keep * 86400;
+    foreach ((array)@glob($dir . '/*.jsonl') as $file) {
+        if (is_string($file) && @filemtime($file) < $cut) {
+            @unlink($file);
+        }
+    }
+}
+
+function bg_log_image($dataUrl)
+{
+    static $info = null;
+    if ($info !== null) {
+        return $info;
+    }
+    $info = array('len' => is_string($dataUrl) ? strlen($dataUrl) : 0, 'id' => '');
+    if (is_string($dataUrl) && $dataUrl !== '') {
+        $info['id'] = substr(sha1($dataUrl), 0, 10);
+    }
+    return $info;
+}
+
+function bg_log_ocr($result, $ms, $kind, $image = '')
+{
+    $cfg = bg_log_cfg();
+    if ($cfg === false || !is_array($result)) {
+        return;
+    }
+    $f = isset($result['fields']) && is_array($result['fields']) ? $result['fields'] : array();
+    $items = array();
+    $src = isset($f['items']) && is_array($f['items']) ? $f['items'] : array();
+    foreach (array_slice($src, 0, 20) as $it) {
+        if (!is_array($it)) {
+            continue;
+        }
+        $items[] = array(
+            'no' => (string)(isset($it['partNo']) ? $it['partNo'] : ''),
+            'name' => (string)(isset($it['partName']) ? $it['partName'] : ''),
+            'proc' => (string)(isset($it['process']) ? $it['process'] : ''),
+            'qty' => isset($it['qty']) ? $it['qty'] : 0,
+            'price' => isset($it['price']) ? $it['price'] : null,
+        );
+    }
+    $entry = array(
+        'kind' => $kind,
+        'plugin' => isset($result['plugin']['id']) ? $result['plugin']['id'] : '',
+        'engine' => isset($result['engine']) ? $result['engine'] : '',
+        'ms' => (int)$ms,
+        'conf' => isset($result['confidence']) ? $result['confidence'] : 0,
+        'date' => isset($f['date']) ? $f['date'] : '',
+        'worker' => isset($f['worker']) ? $f['worker'] : '',
+        'workshop' => isset($f['workshop']) ? $f['workshop'] : '',
+        'items' => $items,
+        'warnings' => isset($result['warnings']) && is_array($result['warnings'])
+            ? array_slice($result['warnings'], 0, 6) : array(),
+    );
+    if ($image !== '') {
+        $entry['image'] = bg_log_image($image);
+    }
+    if (!isset($cfg['level']) || (string)$cfg['level'] !== 'basic') {
+        $entry['raw'] = bg_plugin_cut(isset($result['raw']) ? $result['raw'] : '', 1500);
+    }
+    bg_log_write($entry);
+}
+
+function bg_log_match_on()
+{
+    $cfg = bg_log_cfg();
+    return $cfg !== false && (!isset($cfg['logMatch']) || (string)$cfg['logMatch'] !== '');
+}
+
+function bg_log_match($no, $name, $hit, $cands)
+{
+    if (!bg_log_match_on()) {
+        return;
+    }
+    $arr = array();
+    foreach (array_slice((array)$cands, 0, 3) as $c) {
+        if (!is_array($c) || !isset($c['part']) || !is_array($c['part'])) {
+            continue;
+        }
+        $arr[] = (isset($c['part']['no']) ? (string)$c['part']['no'] : '')
+            . ':' . (isset($c['score']) ? round((float)$c['score'], 3) : 0);
+    }
+    bg_log_write(array(
+        'kind' => 'match',
+        'q' => bg_plugin_cut((string)$no, 40),
+        'name' => bg_plugin_cut((string)$name, 40),
+        'hit' => is_array($hit) && isset($hit['part']['no']) ? (string)$hit['part']['no'] : '',
+        'score' => is_array($hit) && isset($hit['score']) ? round((float)$hit['score'], 3) : 0,
+        'cands' => $arr,
+    ));
 }
 
 /* ================================================================ 只读分页接口 */
@@ -2711,40 +2861,44 @@ function bg_fuzzy_candidates($parts, $text, $limit = 5)
         } elseif (bg_slen($noC) >= 4 && strpos($flat, $noC) !== false) {
             $score = 0.96;
         } else {
+            $noLen = bg_slen($noC);
             foreach ($longRuns as $r) {
                 $rl = strlen($r);
-                if ($rl < 4) {
+                if ($rl < 4 || $noLen < 4) {
                     continue;
                 }
-                $noLen = bg_slen($noC);
-                $lim = min($rl, $noLen);
-                for ($l = $lim; $l >= 4; $l--) {
-                    $pre = substr($r, 0, $l);
-                    if ($noLen >= $l && strpos($noC, $pre) !== false) {
-                        $score = max($score, 0.95);
-                        break;
-                    }
-                    if (strpos($pre, $noC) !== false) {
-                        $score = max($score, 0.93);
-                        break;
-                    }
+                /* 整段图号被零件号包含：最强证据（如 307437R61 对应 T307437R61） */
+                if ($rl >= 5 && $noLen >= $rl && strpos($noC, $r) !== false) {
+                    $score = max($score, 0.97);
+                    continue;
                 }
-                if ($score < 0.9) {
-                    $sim = bg_sim_key($r, $noC);
-                    if ($sim >= 0.72) {
-                        $score = max($score, 0.8 + ($sim - 0.72) * 0.5);
-                    }
+                /* 以整段编辑距离为主：只差一两个字符的才是最近候选，
+                   避免 4 位数字恰好出现在别的图号里就被判成 0.9 以上（如 26971B05 → BF326970-V2） */
+                $sim = bg_sim_key($r, $noC);
+                $s = 0;
+                if ($sim >= 0.8) {
+                    $s = 0.86 + ($sim - 0.8) * 0.5;
+                } elseif ($sim >= 0.62) {
+                    $s = 0.72 + ($sim - 0.62) * 0.78;
+                } elseif ($sim >= 0.55) {
+                    $s = 0.62 + ($sim - 0.55) * 0.6;
                 }
+                /* 首 4 位一致（常见漏写前缀字母）少量加分 */
+                if ($s > 0 && $rl >= 5 && $noLen >= 5 && substr($r, 0, 4) === substr($noC, 0, 4)) {
+                    $s += 0.02;
+                }
+                $score = max($score, $s);
             }
             if (!$score && bg_slen($noC) >= 5) {
+                /* 原文里夹着别的字符时，允许在图号长度窗口内滑动比对 */
                 $len = bg_slen($noC);
                 $seg = 0;
                 $flatLen = bg_slen($flat);
                 for ($i = 0; $i + $len <= $flatLen; $i++) {
                     $seg = max($seg, bg_sim_key(bg_ssub($flat, $i, $len), $noC));
                 }
-                if ($seg >= 0.75) {
-                    $score = 0.72 + ($seg - 0.75) * 0.5;
+                if ($seg >= 0.78) {
+                    $score = 0.68 + ($seg - 0.78) * 0.5;
                 }
             }
         }
@@ -2755,8 +2909,14 @@ function bg_fuzzy_candidates($parts, $text, $limit = 5)
             $scored[] = array('part' => $p, 'score' => $score);
         }
     }
-    usort($scored, function ($a, $b) {
-        return $b['score'] <=> $a['score'];
+    usort($scored, function ($a, $b) use ($flat) {
+        if (abs($b['score'] - $a['score']) > 1e-9) {
+            return $b['score'] <=> $a['score'];
+        }
+        /* 同分时与原文更接近的图号优先，避免按更新时间随意取一条 */
+        $sa = bg_sim_key($flat, bg_compact_key(isset($a['part']['no']) ? $a['part']['no'] : ''));
+        $sb = bg_sim_key($flat, bg_compact_key(isset($b['part']['no']) ? $b['part']['no'] : ''));
+        return $sb <=> $sa;
     });
     return array_slice($scored, 0, $limit);
 }
@@ -2801,8 +2961,24 @@ function bg_match_part($parts, $no, $name)
     if ($hit) {
         return array('part' => $hit, 'score' => 1);
     }
-    $fz = bg_fuzzy_candidates($parts, trim($no . ' ' . $name), 1);
-    return count($fz) ? $fz[0] : null;
+    $fz = bg_fuzzy_candidates($parts, trim($no . ' ' . $name), 3);
+    if (!$fz) {
+        return null;
+    }
+    $top = $fz[0];
+    $second = isset($fz[1]) ? $fz[1] : null;
+    /* 只有少量字符重合的弱证据不自动填充，留给人工选择 */
+    if ($top['score'] < 0.72) {
+        return null;
+    }
+    /* 强证据直接采用；弱证据需明显领先，避免多候选同分时自动填错零件 */
+    if ($top['score'] < 0.95) {
+        $margin = $second ? $top['score'] - $second['score'] : 1.0;
+        if ($margin < 0.04) {
+            return null;
+        }
+    }
+    return $top;
 }
 
 function bg_all_parts_for_match($pdo)
@@ -3007,7 +3183,7 @@ switch ($action) {
             'imageBase' => 'api.php?action=image&f=',
             'counts' => bg_bootstrap_counts($pdo),
             'firstDate' => $first,
-            'version' => '2.5',
+            'version' => '2.6',
         ));
         break;
 
@@ -3112,7 +3288,11 @@ switch ($action) {
                 foreach ($body['queries'] as $qq) {
                     $no = is_array($qq) && isset($qq['no']) && is_scalar($qq['no']) ? trim((string)$qq['no']) : '';
                     $name = is_array($qq) && isset($qq['name']) && is_scalar($qq['name']) ? trim((string)$qq['name']) : '';
-                    $matches[] = bg_match_part($parts, $no, $name);
+                    $hit = bg_match_part($parts, $no, $name);
+                    if (bg_log_match_on()) {
+                        bg_log_match($no, $name, $hit, bg_fuzzy_candidates($parts, trim($no . ' ' . $name), 3));
+                    }
+                    $matches[] = $hit;
                 }
             } elseif (isset($body['texts']) && is_array($body['texts'])) {
                 foreach ($body['texts'] as $t) {

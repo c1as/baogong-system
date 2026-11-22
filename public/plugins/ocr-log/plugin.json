@@ -1,0 +1,41 @@
+{
+  "id": "ocr-log",
+  "name": "识别日志",
+  "version": "1.0.0",
+  "description": "记录每次 OCR 识别的引擎、耗时、字段、明细、告警与零件匹配结果，便于排查识别错误或关联错误。日志按天保存到 data/ocr-logs/。",
+  "author": "报工系统",
+  "capabilities": ["report.ocr.log"],
+  "defaultEnabled": true,
+  "entry": "handler.php",
+  "check": "check.php",
+  "settings": [
+    {
+      "key": "level",
+      "label": "记录级别",
+      "type": "select",
+      "default": "full",
+      "options": [
+        { "value": "full", "label": "详细（含识别原文）" },
+        { "value": "basic", "label": "精简（不含原文）" }
+      ],
+      "hint": "排查识别内容用详细；只关注耗时与字段可用精简"
+    },
+    {
+      "key": "keepDays",
+      "label": "日志保留天数",
+      "type": "number",
+      "default": "14",
+      "min": 1,
+      "max": 180,
+      "step": 1,
+      "hint": "超过天数的日志文件会在下次写入时自动删除"
+    },
+    {
+      "key": "logMatch",
+      "label": "记录零件匹配结果",
+      "type": "checkbox",
+      "default": "1",
+      "hint": "记录识别图号匹配到哪个零件、得分与候选，排查关联错误最有用"
+    }
+  ]
+}

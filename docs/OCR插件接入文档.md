@@ -1,8 +1,8 @@
 # OCR 识别插件 · 开发与接入文档
 
-> 适用版本：v2.5（2026-11-21）
+> 适用版本：v2.6（2026-11-22）
 > 相关代码：`public/api.php`（插件调度）、`public/lib/net.php`（自检与出网）、`public/plugins/`（插件目录）
-> 参考实现：`plugins/mock-ocr/`（最小示例）、`plugins/baidu-ocr/`（百度通用 OCR，含超时重试）、`plugins/qwen35-ocr/`（千问多模态，含文本兜底解析）、`plugins/ocr-ensemble/`（多路融合）
+> 参考实现：`plugins/mock-ocr/`（最小示例）、`plugins/baidu-ocr/`（百度通用 OCR，含超时重试）、`plugins/qwen35-ocr/`（千问多模态，含文本兜底解析）、`plugins/mimo-v26-flash/`（小米 MiMo 视觉模型，含零件库注入与重试）、`plugins/ocr-ensemble/`（多路融合）、`plugins/ocr-log/`（识别日志）
 
 ---
 
@@ -73,7 +73,7 @@ public/plugins/my-ocr/
 | `version` | 否 | 展示用，≤20 字，建议语义化版本 |
 | `description` | 否 | ≤200 字 |
 | `author` | 否 | ≤40 字 |
-| `capabilities` | 否 | 能力标签数组，报工识别用 `report.ocr`；融合类插件再声明 `report.ocr.fusion`，前端会优先把它作为默认识别引擎 |
+| `capabilities` | 否 | 能力标签数组：识别引擎用 `report.ocr`；融合类插件再声明 `report.ocr.fusion`，前端会优先把它作为默认识别引擎；日志插件声明 `report.ocr.log`，设置页按钮显示「查看日志」 |
 | `entry` | 否 | 执行脚本文件名，默认 `handler.php`；必须存在且以 `.php` 结尾 |
 | `check` | 否 | 自检脚本文件名，可选；不存在则设置页不显示「API 链接测试」 |
 | `defaultEnabled` | 否 | 缺省 `true`；设为 `false` 时首次安装默认停用，适合融合、收费或需先配置密钥的插件 |
@@ -125,12 +125,12 @@ if (!isset($GLOBALS['BG_PLUGIN_CTX']) || !is_array($GLOBALS['BG_PLUGIN_CTX'])) {
 | --- | --- | --- |
 | `id` | string | 插件 id |
 | `image` | string | 图片 dataURL，形如 `data:image/jpeg;base64,...` |
-| `catalog` | array | 零件库，最多 300 条：`[{"no":"图号","name":"名称","processes":["车","铣"]}]` |
+| `catalog` | array | 零件库，最多 8000 条：`[{"no":"图号","name":"名称","processes":["车","铣"]}]` |
 | `config` | array | 当前插件设置（已合并 default），键为 settings 的 key |
 | `locale` | string | 固定 `zh-CN` |
 | `today` | string | 服务器当天 `YYYY-MM-DD`（Asia/Shanghai） |
 
-注意：`catalog` 只含零件库，不含订单、报工记录；如需更多数据请在自己的插件内直接读 `data/db/baogong.sqlite`（只读建议）。
+注意：`catalog` 只含零件库，不含订单、报工记录；调度层下发全量（上限 8000 条），各引擎应只把 `catalogLimit` 允许的前 N 条塞进提示词，避免 token 过大。如需更多数据请在自己的插件内直接读 `data/db/baogong.sqlite`（只读建议）。
 
 ### 4.3 两种返回方式
 
@@ -189,13 +189,22 @@ function bg_plugin_run(array $ctx) {
 
 融合插件在自己的 `handler.php` 里用 `bg_plugin_invoke_engine($id, $ctx)` 调用其它识别插件，返回与普通调用相同的归一化结构。与 `bg_plugin_invoke()` 不同，单路失败只抛出 `RuntimeException`，不会中断整个请求，调用方可以捕获后记一条告警继续融合；被调用的插件必须已安装且已启用。
 
-`plugins/ocr-ensemble/` 是参考实现：按 `engines` 设置逐路调用，字段相似度聚类投票、数量取置信度加权中位数，再按一致性系数计算综合置信度。
+`plugins/ocr-ensemble/` 是参考实现：按 `engines` 设置逐路调用，字段相似度聚类投票、数量取置信度加权中位数，再按一致性系数计算综合置信度。融合时可用子引擎返回的 `raw` 与零件库做图号校正——只有原文确有佐证的图号才采纳，防止某一路按零件库「猜」出单据上不存在的图号。
+
+### 4.7 识别日志插件（`report.ocr.log`）
+
+声明 `report.ocr.log` 的插件被当作「日志开关」：主程序在每次 `plugin.invoke` 与融合子引擎调用后，自动把引擎、耗时、字段、明细、告警、原文（详细级别）与零件匹配候选写入 `data/ocr-logs/YYYY-MM-DD.jsonl`，插件自身无需处理识别逻辑。约定：
+
+- 必须提供 `check.php`，用于检查日志目录可写并展示今日条数与最近记录（设置页按钮文案为「查看日志」）。
+- 建议设置项：`level`（`full` / `basic`）、`keepDays`（保留天数，默认 14）、`logMatch`（是否记录零件匹配候选）。
+- 关闭（停用）该插件即完全停止写日志；`handler.php` 保留最小实现即可。
+- 参考 `plugins/ocr-log/`。
 
 ---
 
 ## 5. check.php 自检契约
 
-设置页「API 链接测试」会加载 `check.php`（**不受启用状态影响**），用于确认密钥、网络、接口地址是否可用。
+设置页「API 链接测试」会加载 `check.php`（**不受启用状态影响**），用于确认密钥、网络、接口地址是否可用；声明 `report.ocr.log` 的插件按钮文案为「查看日志」。
 
 ```php
 <?php
@@ -299,6 +308,7 @@ return array(
 5. 点「API 链接测试」跑 `check.php`；外网问题可用「互联网连接测试」进一步定位。
 6. 启用插件，在「新增报工 → 拍照识别」上传一张单子验证结果面板。
 7. 同一能力有多个插件时，可在设置页「识别引擎」选择默认识别引擎（默认「自动」，优先使用融合引擎），拍照识别处也能临时切换；启用状态记录在 `data/plugins.json`。
+8. 日志 / 开关类插件声明 `report.ocr.log`，在 `check.php` 里输出日志目录可写性与最近记录即可，无需实现识别逻辑。
 
 ---
 
@@ -313,6 +323,7 @@ return array(
 | 图片相关报错 | 前端只接受 JPG/PNG/WebP，≤8MB |
 | 识别结果条数被截断 | `items` 上限 20 条，`warnings` 上限 5 条 |
 | 日期没填上 | 必须返回真实存在的 `YYYY-MM-DD`；也可在插件里用 `today` 兜底 |
+| 日志目录不可写 | 检查 `data/ocr-logs/` 权限（Web 用户需可写）；在设置页点 `ocr-log` 的「查看日志」可看到具体路径 |
 
 日志：PHP `error_log`，关键词 `[baogong] 插件`。
 
@@ -323,5 +334,5 @@ return array(
 - 脚本第一行做 `BG_PLUGIN_CTX` 检查，防止被直接访问。
 - 密钥只存服务器 `data/plugins.json`，不要写进代码、不要返回给前端。
 - 图片 dataURL 可能很大，解析前先校验前缀与长度。
-- 外部请求设置超时（建议 15–25 秒），并对超时 / 连接中断类瞬时错误做有限次重试（参考 `baidu-ocr`：25 秒超时、最多重试 1 次，HTTP 错误与业务错误不重试），失败抛出可读的中文错误。
+- 外部请求设置超时（建议 15–45 秒，视觉大模型可到 45 秒），并对超时 / 连接中断 / 429 限流 / 5xx 等瞬时错误做有限次重试（参考 `baidu-ocr`：25 秒超时、最多重试 1 次；`mimo-v26-flash`：45 秒超时、可配 0~2 次退避重试），HTTP 业务错误不重试，失败抛出可读的中文错误。
 - 插件版本独立于系统版本号；升级系统不覆盖 `plugins/` 下的自定义插件。

@@ -441,7 +441,7 @@ function renderShell() {
         <button class="side-btn" data-action="backup">${icon('database', 16)}数据备份</button>
         <a class="side-btn" href="#/settings">${icon('settings', 16)}识别插件设置</a>
         ${state.auth ? `<button class="side-btn" data-action="logout">${icon('logout', 16)}退出登录</button>` : ''}
-        <div class="side-ver">v2.5 · 数据保存在服务器</div>
+        <div class="side-ver">v2.6 · 数据保存在服务器</div>
       </div>
     </aside>
 
@@ -2262,6 +2262,12 @@ async function viewReportForm(id, presetPartId) {
     return map;
   }
 
+  /* 工序尾部编号：铣1 → 1，车加工（3） → 3，用于区分同工序的多个工步 */
+  function procNumber(text) {
+    const m = String(text || '').match(/(?:[（(]\s*)?([0-9]{1,2})\s*[)）]?\s*$/);
+    return m ? Number(m[1]) : 0;
+  }
+
   function matchProcessName(part, guess) {
     const ps = partProcesses(part);
     const g = normKey(guess);
@@ -2270,8 +2276,13 @@ async function viewReportForm(id, presetPartId) {
     if (exact) return exact.name;
     const base = procBase(g);
     if (base) {
-      const hit = ps.find((x) => procBase(x.name) === base);
-      if (hit) return hit.name;
+      const cands = ps.filter((x) => procBase(x.name) === base);
+      const num = procNumber(g);
+      if (num) {
+        const same = cands.find((x) => procNumber(normKey(x.name)) === num);
+        if (same) return same.name;
+      }
+      if (cands.length) return cands[0].name;
     }
     return '';
   }
@@ -3632,6 +3643,9 @@ function pluginFieldHtml(f) {
 }
 
 function pluginCardHtml(p) {
+  const caps = p.capabilities || [];
+  const isOcr = caps.includes('report.ocr');
+  const checkLabel = caps.includes('report.ocr.log') ? '查看日志' : 'API 链接测试';
   return `<div class="plugin-card" data-plugin="${esc(p.id)}">
     <div class="plugin-head">
       <div class="plugin-title">
@@ -3651,8 +3665,8 @@ function pluginCardHtml(p) {
     <div class="plugin-fields">${(p.settings || []).map(pluginFieldHtml).join('')}</div>
     <div class="plugin-check-box" hidden></div>
     <div class="plugin-actions">
-      ${p.hasCheck ? `<button type="button" class="btn btn-ghost" data-plugin-check="${esc(p.id)}">API 链接测试</button>` : ''}
-      <button type="button" class="btn btn-ghost" data-plugin-test="${esc(p.id)}">测试识别</button>
+      ${p.hasCheck ? `<button type="button" class="btn btn-ghost" data-plugin-check="${esc(p.id)}">${checkLabel}</button>` : ''}
+      ${isOcr ? `<button type="button" class="btn btn-ghost" data-plugin-test="${esc(p.id)}">测试识别</button>` : ''}
       <button type="button" class="btn btn-primary" data-plugin-save="${esc(p.id)}">保存设置</button>
     </div>
   </div>`;
