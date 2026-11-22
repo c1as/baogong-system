@@ -21,8 +21,14 @@ android {
         applicationId 'com.baogong.helper'
         minSdk 24
         targetSdk 34
-        versionCode 2
-        versionName '2.0'
+        versionCode 3
+        versionName '3.0'
+
+        // V4 EasyTier：目前仅编译了 arm64-v8a 的 native 库，
+        // 限制打包架构，避免其他 ABI 因缺少 .so 而在运行时失败。
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
     }
 
     signingConfigs {
