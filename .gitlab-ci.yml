@@ -1,0 +1,65 @@
+# ==============================================================================
+# 报工系统服务端（baogong-system）热更新包发布流水线
+#
+# 用途：推送 web-v* 标签（如 web-v2.6）时，自动把 public/ 打包成 zip，
+#       发布到本仓库的 Generic Package Registry，并创建 Release 挂载下载链接。
+#
+# 为什么用 Generic Package 而不是 Release 直传附件：
+#   私有仓库下 Release 的 /uploads/ 附件直链即使用 PAT 也返回 401；
+#   Generic Package 的 API 下载路径带 PRIVATE-TOKEN 可正常下载，App 端才能拉取。
+#
+# 使用者：改完 public/ 里的 PHP/网页代码后，打一个 web-v* tag 推送即可，
+#         App 里点「检查服务端更新」就能发现并下载这个 zip。
+# ==============================================================================
+
+stages:
+  - package
+
+variables:
+  PACKAGE_NAME: "baogong-web"
+
+package-web:
+  stage: package
+  # 用 eclipse-temurin（Ubuntu 基础），自带 curl 与 zip，避免 alpine 装包受网络影响
+  image: eclipse-temurin:17-jdk
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^web-v/
+  script:
+    - set -e
+    - echo "==> 打包 public/ 为热更新 zip"
+    # 用 JDK 自带的 jar 打包（temurin 镜像无 zip 命令，但一定有 jar）
+    # 产物是标准 zip，App 端 ZipInputStream 可直接解压；文件位于根层级
+    - cd public && jar cf ../${PACKAGE_NAME}-${CI_COMMIT_TAG}.zip . && cd ..
+    - ZIP="${PACKAGE_NAME}-${CI_COMMIT_TAG}.zip"
+    - echo "==> 产物：$ZIP ($(ls -lh $ZIP | awk '{print $5}'))"
+    - echo "==> 上传到 Generic Package Registry"
+    - |
+      code=$(curl -sS -o /tmp/up.out -w "%{http_code}" -X PUT \
+        -H "JOB-TOKEN: $CI_JOB_TOKEN" \
+        --upload-file "$ZIP" \
+        "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${CI_COMMIT_TAG}/${ZIP}")
+      echo "upload HTTP $code"
+      if [ "$code" != "201" ] && [ "$code" != "200" ]; then cat /tmp/up.out; exit 1; fi
+    - echo "==> 创建 Release 并挂载包下载链接"
+    - |
+      DL_URL="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PACKAGE_NAME}/${CI_COMMIT_TAG}/${ZIP}"
+      cat > /tmp/rel.json <<JSON
+      {
+        "tag_name": "${CI_COMMIT_TAG}",
+        "name": "报工服务端 ${CI_COMMIT_TAG}",
+        "description": "服务端热更新包 ${CI_COMMIT_TAG}。App 内「检查服务端更新」可直接下载覆盖 public/，不影响 data/ 业务数据。",
+        "assets": { "links": [ { "name": "${ZIP}", "url": "${DL_URL}", "link_type": "package" } ] }
+      }
+      JSON
+      code=$(curl -sS -o /tmp/rel.out -w "%{http_code}" -X POST \
+        -H "JOB-TOKEN: $CI_JOB_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d @/tmp/rel.json \
+        "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/releases")
+      echo "release HTTP $code"
+      if [ "$code" != "201" ] && [ "$code" != "200" ]; then cat /tmp/rel.out; exit 1; fi
+    - echo "==> 完成：${CI_PROJECT_URL}/-/releases/${CI_COMMIT_TAG}"
+  artifacts:
+    paths:
+      - ${PACKAGE_NAME}-${CI_COMMIT_TAG}.zip
+    expire_in: 30 days
