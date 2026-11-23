@@ -190,6 +190,40 @@ function imgUrl(name) {
   return (state.imageBase || '/img/') + encodeURIComponent(name);
 }
 
+/* 内置 PDF 查看器（PDF.js）。path 为图纸相对路径，如 drawings/xxx.pdf */
+function openPdfViewer(path, name) {
+  if (!path) return;
+  let ov = document.getElementById('pdfOverlay');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.id = 'pdfOverlay';
+    ov.className = 'pdf-overlay';
+    ov.innerHTML = '<iframe id="pdfFrame" title="图纸查看" src="about:blank"></iframe>';
+    document.body.appendChild(ov);
+  }
+  const frame = ov.querySelector('#pdfFrame');
+  const next = 'pdf.html?f=' + encodeURIComponent(path) + '&name=' + encodeURIComponent(name || '图纸');
+  // 同一文件重复打开时复用已加载的 iframe，避免中断正在进行的请求
+  if (frame.dataset.src !== next) {
+    frame.dataset.src = next;
+    frame.src = next;
+  }
+  ov.hidden = false;
+  document.body.classList.add('pdf-open');
+}
+
+function closePdfViewer() {
+  const ov = document.getElementById('pdfOverlay');
+  if (!ov) return;
+  ov.hidden = true;
+  document.body.classList.remove('pdf-open');
+  // 只隐藏、不重置 iframe.src：重置会中断加载中的 PDF 请求（net::ERR_ABORTED）
+}
+
+window.addEventListener('message', (e) => {
+  if (e.data === 'bg-pdf-close') closePdfViewer();
+});
+
 const state = {
   plugins: [],
   auth: false,
@@ -438,10 +472,7 @@ function renderShell() {
         ${navItem('order-new', '#/orders/new', 'filePlus', '新增订单')}
       </nav>
       <div class="side-foot">
-        <button class="side-btn" data-action="backup">${icon('database', 16)}数据备份</button>
-        <a class="side-btn" href="#/settings">${icon('settings', 16)}识别插件设置</a>
         ${state.auth ? `<button class="side-btn" data-action="logout">${icon('logout', 16)}退出登录</button>` : ''}
-        <div class="side-ver">v2.6 · 数据保存在服务器</div>
       </div>
     </aside>
 
@@ -452,6 +483,16 @@ function renderShell() {
           <p id="pageSub"></p>
         </div>
         <div class="actions" id="pageActions"></div>
+        <div class="settings-wrap">
+          <button class="icon-btn settings-btn" type="button" id="settingsBtn" title="设置" aria-label="设置" aria-haspopup="true">
+            ${icon('settings', 18)}
+          </button>
+          <div class="settings-menu" id="settingsMenu" hidden>
+            <button type="button" data-action="backup">${icon('database', 16)}<span>数据备份</span></button>
+            <a href="#/settings">${icon('settings', 16)}<span>识别插件设置</span></a>
+            <div class="settings-ver">v2.7 · 数据保存在服务器</div>
+          </div>
+        </div>
       </header>
       <div class="view" id="view"></div>
     </main>
@@ -464,6 +505,18 @@ function renderShell() {
       ${tabItem('data', '#/data', 'database', '数据')}
     </nav>`;
   app.hidden = false;
+
+  const sBtn = $('#settingsBtn');
+  const sMenu = $('#settingsMenu');
+  if (sBtn && sMenu) {
+    sBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      sMenu.hidden = !sMenu.hidden;
+    });
+    sMenu.addEventListener('click', (e) => {
+      if (e.target.closest('[data-action], a')) sMenu.hidden = true;
+    });
+  }
 }
 
 function setHead(title, sub, actions = '') {
@@ -2941,8 +2994,14 @@ function viewStats() {
       return {
         items: (data.items || []).map((o) => ({
           value: o.id,
-          label: o.no,
-          sub: [o.partNo || '', o.partName || '', o.process || '未指定工序', `数量 ${fmtQty(o.qty)}`]
+          // 零件号作为主标题，订单号放到副标题，方便按零件查找
+          label: o.partNo || o.no,
+          sub: [
+            o.partNo ? o.no : '',
+            o.partName || '',
+            o.process || '未指定工序',
+            `数量 ${fmtQty(o.qty)}`,
+          ]
             .filter(Boolean)
             .join(' · '),
         })),
@@ -3210,7 +3269,7 @@ async function openPartDrawings(id) {
       const d = ds[Number(btn.dataset.drawView)];
       if (!d) return;
       if (d.type === 'pdf') {
-        window.open(imgUrl(d.path), '_blank', 'noopener');
+        openPdfViewer(d.path, d.name);
         return;
       }
       const box = $('#drawingPreview');
@@ -4002,6 +4061,10 @@ document.addEventListener('click', async (e) => {
 
   if (!e.target.closest('.combo')) closeAllCombos();
   if (!e.target.closest('.ms')) $$('.ms-panel').forEach((p) => (p.hidden = true));
+  if (!e.target.closest('.settings-wrap')) {
+    const menu = document.getElementById('settingsMenu');
+    if (menu) menu.hidden = true;
+  }
 });
 
 document.addEventListener('pointerdown', (e) => {

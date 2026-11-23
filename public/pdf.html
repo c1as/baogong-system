@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=4, user-scalable=yes">
+<title>图纸查看</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: #eef1f6; }
+  body { display: flex; flex-direction: column; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; color: #1f2937; }
+  header {
+    position: sticky; top: 0; z-index: 10;
+    display: flex; align-items: center; gap: 6px;
+    padding: 8px 10px; background: rgba(255,255,255,.96);
+    border-bottom: 1px solid #e3e8f0; backdrop-filter: blur(8px);
+  }
+  #close {
+    flex: none; width: 36px; height: 36px; border-radius: 10px;
+    border: 1px solid #e3e8f0; background: #fff; font-size: 16px; line-height: 1;
+    color: #374151; cursor: pointer;
+  }
+  #name {
+    flex: 1; min-width: 0; font-size: 13.5px; font-weight: 600;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #pages { flex: none; font-size: 12px; color: #6b7280; padding: 0 4px; }
+  header button.tool {
+    flex: none; min-width: 36px; height: 36px; padding: 0 9px; border-radius: 10px;
+    border: 1px solid #e3e8f0; background: #fff; color: #374151; font-size: 13px; cursor: pointer;
+  }
+  header button.tool:active { background: #f1f5fb; }
+  #scroll { flex: 1; overflow: auto; -webkit-overflow-scrolling: touch; padding: 12px; }
+  #pageRoot { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+  #pageRoot canvas { background: #fff; border-radius: 6px; box-shadow: 0 2px 10px rgba(16,24,40,.12); max-width: 100%; height: auto !important; }
+  #status {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    padding: 24px; text-align: center; font-size: 13px; color: #6b7280; line-height: 1.7;
+  }
+  #status[hidden] { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <button id="close" type="button" title="关闭" aria-label="关闭">✕</button>
+  <div id="name">图纸</div>
+  <div id="pages"></div>
+  <button class="tool" id="zoomOut" type="button" title="缩小">－</button>
+  <button class="tool" id="zoomIn" type="button" title="放大">＋</button>
+  <button class="tool" id="fit" type="button" title="适应宽度">适宽</button>
+</header>
+<div id="status">正在加载图纸…</div>
+<div id="scroll"><div id="pageRoot"></div></div>
+
+<script src="vendor/pdfjs/pdf.min.js"></script>
+<script>
+(function () {
+  var params = new URLSearchParams(location.search);
+  var file = params.get('f') || '';
+  var name = params.get('name') || '';
+  var statusEl = document.getElementById('status');
+  var root = document.getElementById('pageRoot');
+  var pagesEl = document.getElementById('pages');
+  var scrollEl = document.getElementById('scroll');
+
+  document.getElementById('name').textContent = name || '图纸';
+
+  function fail(msg, hint) {
+    statusEl.hidden = false;
+    statusEl.innerHTML = '<div><strong>' + msg + '</strong>' + (hint ? '<br><span style="font-size:12px">' + hint + '</span>' : '') + '</div>';
+  }
+
+  document.getElementById('close').addEventListener('click', function () {
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage('bg-pdf-close', '*');
+    } else if (history.length > 1) {
+      history.back();
+    } else {
+      window.close();
+    }
+  });
+
+  if (!file) { fail('没有指定图纸文件'); return; }
+  if (!window.pdfjsLib) { fail('PDF 组件未加载', '请确认 public/vendor/pdfjs/ 下的文件存在'); return; }
+
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'vendor/pdfjs/pdf.worker.min.js';
+
+  var pdf = null;
+  var userScale = 1;
+  var fitScale = 1;
+  var rendering = false;
+
+  function pageWidth() {
+    var w = scrollEl.clientWidth - 24;
+    return Math.max(240, w);
+  }
+
+  function renderAll() {
+    if (!pdf || rendering) return;
+    rendering = true;
+    var targetWidth = pageWidth();
+    root.innerHTML = '';
+    var chain = Promise.resolve();
+    for (var i = 1; i <= pdf.numPages; i++) {
+      (function (no) {
+        chain = chain.then(function () {
+          return pdf.getPage(no).then(function (page) {
+            var base = page.getViewport({ scale: 1 });
+            fitScale = targetWidth / base.width;
+            var scale = fitScale * userScale;
+            var vp = page.getViewport({ scale: scale });
+            var dpr = Math.min(window.devicePixelRatio || 1, 2);
+            var canvas = document.createElement('canvas');
+            canvas.width = Math.floor(vp.width * dpr);
+            canvas.height = Math.floor(vp.height * dpr);
+            canvas.style.width = Math.floor(vp.width) + 'px';
+            var ctx = canvas.getContext('2d');
+            root.appendChild(canvas);
+            pagesEl.textContent = no + ' / ' + pdf.numPages;
+            return page.render({
+              canvasContext: ctx,
+              viewport: vp,
+              transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : null
+            }).promise;
+          });
+        });
+      })(i);
+    }
+    chain.then(function () {
+      rendering = false;
+      statusEl.hidden = true;
+    }).catch(function (err) {
+      rendering = false;
+      fail('图纸渲染失败', (err && err.message) ? err.message : '');
+    });
+  }
+
+  document.getElementById('zoomIn').addEventListener('click', function () {
+    userScale = Math.min(4, userScale * 1.25);
+    renderAll();
+  });
+  document.getElementById('zoomOut').addEventListener('click', function () {
+    userScale = Math.max(0.4, userScale / 1.25);
+    renderAll();
+  });
+  document.getElementById('fit').addEventListener('click', function () {
+    userScale = 1;
+    renderAll();
+  });
+
+  var resizeTimer = null;
+  window.addEventListener('resize', function () {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function () {
+      userScale = 1;
+      renderAll();
+    }, 250);
+  });
+
+  pdfjsLib.getDocument({ url: 'api.php?action=image&f=' + encodeURIComponent(file), withCredentials: true })
+    .promise
+    .then(function (doc) {
+      pdf = doc;
+      pagesEl.textContent = '1 / ' + doc.numPages;
+      renderAll();
+    })
+    .catch(function (err) {
+      fail('图纸加载失败', (err && err.message) ? err.message : '请确认已登录且文件存在');
+    });
+})();
+</script>
+</body>
+</html>
