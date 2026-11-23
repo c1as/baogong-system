@@ -3,10 +3,13 @@
 给 AI 会话的最小导航。完整拆分方案见 `docs/superpowers/specs/2026-11-24-模块拆分与索引-design.md`。
 
 ## 去哪找代码
-- 前端单页：`public/app.js`（按 `/* ===` 分节注释组织）；外壳 `public/index.html`；样式 `public/style.css`；PDF 查看 `public/pdf.html`
-- 后端：`public/api.php`（工具函数 → 仓储/业务函数 → 底部 `switch ($action)` 路由）
+- 前端：`public/js/`（`views`=页面，`features`=能力，`core`=工具，`shell`=外壳与启动，`ui`=通用组件），由 `public/index.html` 按顺序加载
+- 后端：`public/api.php` 仅启动 + 鉴权 + `$ACTIONS` 路由表；接口实现在 `public/actions/*.php`，通用函数在 `public/lib/*.php`
 - OCR 插件：`public/plugins/<id>/{plugin.json,handler.php,check.php}`，协议勿改
 - 先读 `docs/模块索引.md` 再定位，避免整文件通读
+
+## 已知例外
+- `public/js/views/report-form.js` 861 行：其中 `viewReportForm` 是单个 784 行大函数，不重构内部无法降到 700 行以下，暂作为唯一超限文件
 
 ## 改代码前
 1. 单文件 ≤700 行；新代码按 `core/features/views`（前端）、`lib/actions`（后端）分层

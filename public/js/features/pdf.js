@@ -17,7 +17,7 @@ function openPdfViewer(path, name) {
     document.body.appendChild(ov);
   }
   const frame = ov.querySelector('#pdfFrame');
-  const next = 'pdf.html?v=2.7&f=' + encodeURIComponent(path) + '&name=' + encodeURIComponent(name || '图纸');
+  const next = 'pdf.html?v=2.8&f=' + encodeURIComponent(path) + '&name=' + encodeURIComponent(name || '图纸');
   // 同一文件重复打开时复用已加载的 iframe，避免中断正在进行的请求
   if (frame.dataset.src !== next) {
     frame.dataset.src = next;

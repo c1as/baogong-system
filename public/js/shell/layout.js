@@ -56,7 +56,7 @@ function renderShell() {
           <div class="settings-menu" id="settingsMenu" hidden>
             <button type="button" data-action="backup">${icon('database', 16)}<span>数据备份</span></button>
             <a href="#/settings">${icon('settings', 16)}<span>识别插件设置</span></a>
-            <div class="settings-ver">v2.7 · 数据保存在服务器</div>
+            <div class="settings-ver">v${state.version || '2.8'} · 数据保存在服务器</div>
           </div>
         </div>
       </header>
