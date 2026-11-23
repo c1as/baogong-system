@@ -1,0 +1,75 @@
+# ==============================================================================
+# 报工系统服务端（baogong-system）热更新包发布工作流
+#
+# 用途：推送 web-v* 标签（如 web-v2.7）时，自动把 public/ 打包成 zip，
+#       创建 GitHub Release 并挂载 zip 附件，供 App 内「检查服务端更新」下载。
+#
+# 包格式：baogong-web-${tag}.zip，public/ 下文件位于 zip 根层级，
+#         路径使用正斜杠，不包含 data/ 运行时数据。
+#
+# 使用：改完 public/ 里的 PHP/网页代码后，推送 web-v* 标签即可。
+# ==============================================================================
+
+name: Release Web Hot Update
+
+on:
+  push:
+    tags:
+      - 'web-v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  package-web:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 打包 public/ 为热更新 zip
+        run: |
+          python3 - <<'PY'
+          import os, zipfile
+
+          tag = os.environ["GITHUB_REF_NAME"]
+          out = f"baogong-web-{tag}.zip"
+          count = 0
+          with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+              for root, _, files in os.walk("public"):
+                  for name in sorted(files):
+                      path = os.path.join(root, name)
+                      # 统一使用相对 public/ 的正斜杠路径，文件位于 zip 根层级
+                      z.write(path, os.path.relpath(path, "public").replace(os.sep, "/"))
+                      count += 1
+          print(f"打包完成：{out}，{count} 个文件，{os.path.getsize(out)} 字节")
+          PY
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: baogong-web
+          path: baogong-web-*.zip
+          retention-days: 30
+
+      - name: 创建 Release 并挂载 zip
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          TAG="${GITHUB_REF_NAME}"
+          ZIP="baogong-web-${TAG}.zip"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "==> Release ${TAG} 已存在，仅更新附件"
+          else
+            echo "==> 创建 Release ${TAG}"
+            gh release create "$TAG" \
+              --title "报工服务端 ${TAG}" \
+              --notes "服务端热更新包 ${TAG}。App 内「检查服务端更新」可直接下载覆盖 public/，不影响 data/ 业务数据。"
+          fi
+          gh release upload "$TAG" "$ZIP" --clobber
+          echo "==> 完成：${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
