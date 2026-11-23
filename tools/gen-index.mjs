@@ -30,7 +30,8 @@ function walk(dir, ext, acc = []) {
 }
 
 function parseHeader(text) {
-  const m = text.match(/^\s*\/\*([\s\S]*?)\*\//);
+  const body = text.replace(/^<\?php[^\n]*\n/, '');
+  const m = body.match(/^\s*\/\*([\s\S]*?)\*\//);
   if (!m || !/模块\s*[:：]/.test(m[1])) return null;
   const out = {};
   for (const raw of m[1].split(/\r?\n/)) {
