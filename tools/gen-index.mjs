@@ -52,6 +52,11 @@ lines.push('> 由 `node tools/gen-index.mjs` 生成，请勿手工修改。', ''
 const jsFiles = walk(path.join(PUB, 'js'), '.js');
 lines.push('## 前端', '');
 if (jsFiles.length) {
+  const app = path.join(PUB, 'app.js');
+  if (has(app)) {
+    const h = parseHeader(read(app));
+    if (h) jsFiles.push(app);
+  }
   lines.push('| 文件 | 路由 | 职责 | 依赖 |', '| --- | --- | --- | --- |');
   for (const f of jsFiles.sort()) {
     const h = parseHeader(read(f)) || {};
