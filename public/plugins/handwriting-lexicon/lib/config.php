@@ -230,12 +230,13 @@ function bglx_now()
  * 设计要点：
  *  1) 审查由主程序加载 check.php 时，bglx_setting() 读文件可能与上下文不一致，
  *     故统一收口到 bglx_rev_setting()，优先读 BG_PLUGIN_CTX['config']。
- *  2) 24 项默认值集中在一张表，与 plugin.json 的 default 一一对应。
+ *  2) 默认值集中在一张表，与 plugin.json 的 default 一一对应（v3 新增 4 项，共 28 项）。
  *  3) 路径类设置一律相对 bglx_data_dir() 解析，绝对路径原样保留。
+ *     注意：attachmentDirs / logDir 的历史字面值属于作者 F5 保护段，一个字都不改写。
  * ==========================================================================*/
 
 /**
- * 审查子系统 24 项默认配置。
+ * 审查子系统默认配置（原 24 项 + v3 逐条判定/归档 4 项，共 28 项）。
  *
  * @return array key => string 形式的默认值
  */
@@ -266,6 +267,11 @@ function bglx_rev_defaults()
         'keepOriginalImage' => '1',
         'maskSensitive' => '1',
         'reviewPageSize' => '50',
+        /* v3 新增 4 项：以下为追加项，上方 24 项（含 F5 目录默认值）逐字不动 */
+        'reviewRetentionDays' => '90',      // 审查记录保留天数；0 表示禁用到期归档
+        'reviewArchiveEnabled' => '1',      // 到期归档总开关
+        'reviewArchiveDir' => 'review-archive/', // 相对 data 目录解析，做穿越校验
+        'wholeImageJudgeEnabled' => '0',    // 整图批量快捷默认关闭（Q1）
     );
 }
 
@@ -378,5 +384,28 @@ function bglx_rev_data_path($rel)
         return rtrim($rel, '/');
     }
     return rtrim(bglx_data_dir(), '/') . '/' . ltrim($rel, '/');
+}
+
+/**
+ * v3 归档与判定开关的运行值读取（集中校验，避免各调用点口径漂移）。
+ *
+ * retentionDays=0 表示禁用到期归档，仅保留 items>20000 的条数裁剪（Q5）；
+ * 目录字符串本身不做存在性校验，穿越校验由 bglx_rev_safe_archive_dir() 完成。
+ *
+ * @return array array('retention_days'=>int,'enabled'=>bool,'dir'=>string,
+ *                     'whole_image_judge'=>bool)
+ */
+function bglx_rev_archive_config()
+{
+    $days = bglx_rev_setting_int('reviewRetentionDays', 90);
+    if ($days < 0) {
+        $days = 0;
+    }
+    return array(
+        'retention_days' => $days,
+        'enabled' => bglx_rev_setting_bool('reviewArchiveEnabled', true),
+        'dir' => bglx_rev_setting('reviewArchiveDir', 'review-archive/'),
+        'whole_image_judge' => bglx_rev_setting_bool('wholeImageJudgeEnabled', false),
+    );
 }
 

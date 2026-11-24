@@ -21,6 +21,8 @@ if (!defined('BGLX_REV_DISABLED')) {
     define('BGLX_REV_AI_FAILED', 41003);         // AI 整理失败（可降级）
     define('BGLX_REV_CSRF_INVALID', 41004);      // CSRF nonce 无效
     define('BGLX_REV_VERSION_CONFLICT', 40901);  // 乐观锁冲突（与 BglxLockException 同码）
+    define('BGLX_REV_IMMUTABLE', 41005);         // 已入库终态只读 / 整图批量判定关闭
+    define('BGLX_REV_ARCHIVE_FAIL', 41006);      // 归档失败告警（不回滚判定，仅 warnings）
 }
 if (!defined('BGLX_REV_LIMITS')) {
     define('BGLX_REV_MAX_SCAN_FILES', 5000);     // 单次图片扫描上限
@@ -39,13 +41,15 @@ require_once __DIR__ . '/http.php';
 /**
  * 按需加载全部审查模块。
  *
- * require_once 保证幂等；顺序遵循依赖：存储 → 附件 → 日志 → 关联 → AI → 入库。
+ * require_once 保证幂等；顺序遵循依赖：存储 → 判定服务 → 附件 → 日志 → 关联 → AI → 入库。
+ * review_judge.php 必须紧跟 review_store.php（派生函数被存储层写回时调用）。
  *
  * @return void
  */
 function bglx_rev_bootstrap()
 {
     require_once __DIR__ . '/review_store.php';
+    require_once __DIR__ . '/review_judge.php';
     require_once __DIR__ . '/attachment.php';
     require_once __DIR__ . '/log_reader.php';
     require_once __DIR__ . '/linker.php';

@@ -150,6 +150,87 @@ if ($revEnabled) {
 }
 $bglxAddDetail('审查环境', $revOk, bglx_cut(implode('；', $revParts), 160));
 
+/* 11. v3 逐条判定与归档（三段：服务函数 / 归档目录 / 配置与 F5 默认值） */
+$v3Ok = true;
+$v3Parts = array();
+
+// ① 判定服务与派生函数存在性（I/U/D 三键 + 归档入口）
+$v3Functions = array(
+    'bglx_rev_judge_row', 'bglx_rev_judge_batch', 'bglx_rev_derive_projection',
+    'bglx_rev_derive', 'bglx_rev_infer_rows', 'bglx_rev_after_write',
+    'bglx_rev_safe_archive_dir',
+);
+$v3Methods = array('judgeRow', 'judgeBatch', 'pruneExpired', 'capacityTrim');
+$v3Missing = array();
+foreach ($v3Functions as $v3Function) {
+    if (!function_exists($v3Function)) {
+        $v3Missing[] = $v3Function;
+    }
+}
+$v3Store = bglx_rev_store();
+foreach ($v3Methods as $v3Method) {
+    if (!method_exists($v3Store, $v3Method)) {
+        $v3Missing[] = 'BglxReviewStore::' . $v3Method;
+    }
+}
+if ($v3Missing) {
+    $v3Ok = false;
+    $v3Parts[] = '缺失：' . implode(',', $v3Missing);
+} else {
+    $v3Parts[] = '判定/派生/归档入口齐备';
+}
+
+// ② 归档目录可写（含穿越校验）
+$v3Cfg = bglx_rev_archive_config();
+$v3Dir = bglx_rev_safe_archive_dir($v3Cfg['dir']);
+if ($v3Dir === null) {
+    $v3Ok = false;
+    $v3Parts[] = '归档目录非法';
+} else {
+    $v3DirOk = is_dir($v3Dir) || (@mkdir($v3Dir, 0775, true) || is_dir($v3Dir));
+    $v3DirOk = $v3DirOk && is_writable($v3Dir);
+    if (!$v3DirOk) {
+        $v3Ok = false;
+        $v3Parts[] = '归档目录不可写：' . bglx_cut($v3Dir, 80);
+    } else {
+        $v3Parts[] = '归档目录可写';
+    }
+}
+
+// ③ 4 项配置值合法 + F5 目录默认值不漂移（Q5：retentionDays=0 不判 fail）
+if ($v3Cfg['retention_days'] < 0) {
+    $v3Ok = false;
+    $v3Parts[] = 'reviewRetentionDays 非法';
+} elseif ($v3Cfg['retention_days'] === 0 || !$v3Cfg['enabled']) {
+    $v3Parts[] = '到期归档已禁用（仅条数裁剪）';
+} else {
+    $v3Parts[] = '到期归档 ' . $v3Cfg['retention_days'] . ' 天';
+}
+$v3Parts[] = '整图快捷' . ($v3Cfg['whole_image_judge'] ? '已开启' : '已关闭（逐条判定）');
+$v3Settings = array();
+$v3PluginFile = __DIR__ . '/plugin.json';
+if (is_file($v3PluginFile)) {
+    $v3Plugin = json_decode((string)@file_get_contents($v3PluginFile), true);
+    if (is_array($v3Plugin) && isset($v3Plugin['settings']) && is_array($v3Plugin['settings'])) {
+        foreach ($v3Plugin['settings'] as $v3Setting) {
+            if (is_array($v3Setting) && isset($v3Setting['key'])) {
+                $v3Settings[$v3Setting['key']] = $v3Setting;
+            }
+        }
+    }
+}
+$v3F5Ok = isset($v3Settings['attachmentDirs'], $v3Settings['logDir'])
+    && isset($v3Settings['attachmentDirs']['default'], $v3Settings['logDir']['default'])
+    && (string)$v3Settings['attachmentDirs']['default'] === 'images/attachments/'
+    && (string)$v3Settings['logDir']['default'] === 'ocr-logs/';
+if (!$v3F5Ok) {
+    $v3Ok = false;
+    $v3Parts[] = 'F5 目录默认值漂移';
+} else {
+    $v3Parts[] = 'F5 默认值未漂移';
+}
+$bglxAddDetail('v3 逐条判定与归档', $v3Ok, bglx_cut(implode('；', $v3Parts), 160));
+
 return array(
     'ok' => $allOk,
     'message' => $allOk ? '手写字词库插件自检通过' : '手写字词库插件自检未通过，请查看明细',

@@ -349,6 +349,24 @@ function bglx_rev_import_decisions($decisions, $itemId, $cfg = array())
     $aiSignatures = isset($cfg['ai_signatures']) && is_array($cfg['ai_signatures'])
         ? array_map('strval', $cfg['ai_signatures']) : array();
 
+    // R07 第二层闸门：manual 来源只吃判错行；ai 来源仍走既有签名 + accepted 校验，互不误伤
+    $onlyWrong = array_key_exists('only_wrong', $cfg)
+        ? (bool)$cfg['only_wrong'] : ($origin === 'manual');
+    if ($onlyWrong && $origin === 'manual') {
+        $decisions = array_values(array_filter(is_array($decisions) ? $decisions : array(), function ($d) {
+            if (!is_array($d)) {
+                return false;
+            }
+            $judgment = isset($d['judgment']) ? (string)$d['judgment'] : '';
+            if ($judgment !== '' && $judgment !== 'wrong') {
+                return false;
+            }
+            $standard = trim((string)(isset($d['correct_value'])
+                ? $d['correct_value'] : (isset($d['standard']) ? $d['standard'] : '')));
+            return $standard !== '';
+        }));
+    }
+
     $out = array('results' => array(), 'added' => 0, 'pending' => 0,
                  'skipped' => 0, 'errors' => array(), 'ids' => array());
     $conflicts = bglx_rev_find_conflicts($decisions, $store);

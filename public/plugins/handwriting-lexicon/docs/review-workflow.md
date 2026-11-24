@@ -196,7 +196,8 @@ php tests/corrector.test.php
 php tests/auth_loopback.test.php
 ```
 
-自检入口由主程序 `api.php?action=plugin.check` 触发，共 10 条明细；第 10 条为合并的「审查环境」。
+自检入口由主程序 `api.php?action=plugin.check` 触发，共 11 条明细；第 10 条为合并的「审查环境」，第 11 条为 v3 逐条判定与归档。
+v3 回归另需运行 `php tests/review_v3.test.php`。
 
 ---
 
@@ -221,4 +222,96 @@ for DST in /workspace/public/plugins/handwriting-lexicon \
 done
 ```
 
-同步后在三处分别运行 `php tests/review.test.php` 与 `plugin.check`，确认结果一致。
+同步后在三处分别运行 `php tests/review.test.php`、`php tests/review_v3.test.php` 与 `plugin.check`，确认结果一致。
+
+---
+
+## 12. 逐条判定与状态派生（v3）
+
+### 12.1 判定粒度下沉
+
+判定从"整张图"下沉到"每一条纠错行"：
+
+- 每条纠错行右侧都有「正确 / 错误 / 撤销」三按钮与当前判定徽标；
+- 判**正确**：不必填写任何值，服务端自动清空 `correct_value`；
+- 判**错误**：必须填写正确值，否则接口返回 `42201`；该行高亮显示；
+- 每条判定走 `review_judge_row`（POST + CSRF + token），带 `row_key` 与 `version` 乐观锁；两人并发改同一行，后者收到 `40901` 并提示刷新。
+
+整图三按钮默认关闭（`wholeImageJudgeEnabled=0`）。开启后降级为「批量判正确 / 全部错误 / 全部撤销」快捷，本质仍是一次锁内逐行写 `judgment`，version 只递增一次。
+
+### 12.2 事实源与投影
+
+- **唯一事实源**：`corrections[].judgment`（逐条判定的真实结果）。
+- **只读投影**：顶层 `judgment` / `status` / `judged_at` 由服务端 `bglx_rev_derive_projection()` 算出后回写，前端永不作为事实传入（F4 列表徽标/统计/筛选照常工作）。
+
+派生判定表（按优先级短路）：
+
+| 条件 | status | judgment |
+|---|---|---|
+| 已入库且未显式重审 | `imported`（保持） | 沿用入库前投影 |
+| 无判定行，或存在任一未审行 | `draft` | `unreviewed` |
+| 全部行判正确（≥1 行） | `reviewed` | `correct` |
+| 全部已判且存在判错行 | `reviewed` | `wrong`（错判优先聚合） |
+
+因此"全部判完自动转审查完成"无需人工点提交；任一行改回未审即回落 `draft`；已入库记录为只读终态（改判返回 `41005`）。全部判完时详情区显示「✓ 审查完成」提示。
+
+### 12.3 新增配置（4 项）
+
+| key | 类型 | 默认 | 作用 |
+|---|---|---|---|
+| `reviewRetentionDays` | number | `90` | 主文件保留天数，`0` 表示禁用到期归档 |
+| `reviewArchiveEnabled` | checkbox | `1` | 到期归档总开关 |
+| `reviewArchiveDir` | text | `review-archive/` | 归档目录，相对 `data/` 解析并做穿越校验 |
+| `wholeImageJudgeEnabled` | checkbox | `0` | 整图批量快捷，默认关闭 |
+
+原有 24 项（含作者 F5 的 `attachmentDirs=images/attachments/`、`logDir=ocr-logs/`）一个字未改。
+
+---
+
+## 13. 四类行生成（覆盖所有明细）
+
+`inferCorrectionRows()`（前端）与 `bglx_rev_infer_rows()`（服务端）同构，共享同一套 `row_key` 契约：
+
+| 已归一化字段 | field | type | row_key | 说明 |
+|---|---|---|---|---|
+| 明细 `partNo` | `partNo` | `drawing_alias` | `i:partNo` | 每条明细一行，空值跳过 |
+| 明细 `process` | `process` | `process_synonym` | `i:process` | 每条明细一行 |
+| 明细 `unit` | `unit` | `unit_synonym` | `i:unit` | 每条明细一行 |
+| 记录级 `note` | `char` | `char_confusion` | `note:char` | 形近字记录级单行，正确值须为单字符 |
+| `qty` | —— | —— | —— | **不生成判定行**，仅在"识别结果（只读）"对照区展示 |
+
+- 遍历**全部明细行**（不再只取第 1 条）；3 条明细若有值字段齐全，生成 3×3 + 1 行。
+- 以 `row_key` 幂等合并存量：已判结果绝不覆盖，手工添加行（`manual:N`）与已判历史行保留。
+- 单条记录判定行上限 200，与存储层一致；超出时界面提示仅展示前 200 行。
+- 形近字按记录级备注生成候选（架构 Q2 方案 A），逐位拆对列 P2 不实现，避免无来源造词库污染。
+
+---
+
+## 14. 90 天归档与审计守恒
+
+主文件 `data/handwriting_review.json` 保留 `reviewRetentionDays`（默认 90）天，更早记录按月归档到 `data/review-archive/review-YYYY-MM.json`：
+
+- **基准**：`max(created_at, updated_at)` 早于 `now - N 天` 才进候选，避免误归档"久未动但仍在审"的草稿。
+- **分组**：按 `created_at` 的 `YYYY-MM` 分组，单批最多 1000 条。
+- **两条不可颠倒的顺序**：
+  1. 写操作后先做**到期归档**，再做 `items > 20000` 的**条数裁剪**（裁剪是最后兜底，正常不触发）；
+  2. 归档时**先写归档文件成功，再从主文档移除**——若写文件失败，主文档不动、判定不回滚，只返回告警。
+- **审计不硬删**：记录的关联审计随条目一并搬入归档文件，并在主文档写一条 `retention_archive` 审计（归档条数与月份）。
+- **失败降级**：归档异常只写 `error_log` 并在响应 `warnings` 中提示，本次判定的 `code=0` 不受影响。
+- 关闭方式：`reviewRetentionDays=0` 或 `reviewArchiveEnabled=0` 即禁用到期归档，仅保留条数裁剪；自检显示"到期归档已禁用"但不判失败。
+
+归档文件结构（便于后续 P2 只读查询入口）：
+
+```json
+{ "schema": 2, "updated_at": "...",
+  "items": [ { "id": "RV-000001", "status": "reviewed", "corrections": [ ... ] } ],
+  "audit": [ { "ts": "...", "action": "review_judge_row", "item_id": "RV-000001", "detail": "row=0:partNo → wrong" } ] }
+```
+
+---
+
+## 15. AI / 入库仅判错行（红线复核）
+
+- `review_ai_organize` 在服务端先过滤 `judgment=wrong && correct_value非空` 的行，判对行根本不进 prompt；`bglx_rev_ai_prompt()` 内再做一层同构断言（defense-in-depth）。
+- `review_import_decisions` 的 `source=manual` 路径同样只接收判错行；全部判正确时 `added=0`，且不把记录置为 `imported`。
+- AI 红线不变：候选强制 `pending`、必须人工勾选、`confidence ≤ 0.8`；不得自动入库。

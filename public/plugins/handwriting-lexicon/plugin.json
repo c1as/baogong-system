@@ -224,6 +224,34 @@
       "type": "number",
       "default": "50",
       "hint": "运行时候选值与日志返回条数硬顶 200，避免大结果集拖慢页面。"
+    },
+    {
+      "key": "reviewRetentionDays",
+      "label": "审查记录保留天数（到期归档）",
+      "type": "number",
+      "default": "90",
+      "hint": "主文件保留 90 天；max(created_at, updated_at) 早于 N 天的记录按月归档到 data/review-archive/review-YYYY-MM.json，审计一并搬迁不硬删。填 0 表示禁用到期归档，仅保留 20000 条条数裁剪。"
+    },
+    {
+      "key": "reviewArchiveEnabled",
+      "label": "启用到期归档",
+      "type": "checkbox",
+      "default": "1",
+      "hint": "关闭后只保留既有 audit 按月归档与 items 条数裁剪，不做 90 天到期归档。"
+    },
+    {
+      "key": "reviewArchiveDir",
+      "label": "归档目录（相对 data 目录）",
+      "type": "text",
+      "default": "review-archive/",
+      "hint": "默认 review-archive/ 即 data/review-archive/。仅接受相对 data 目录的路径（或 data 目录下的绝对路径），含 .. 的路径一律拒绝。"
+    },
+    {
+      "key": "wholeImageJudgeEnabled",
+      "label": "保留整图批量判定快捷按钮",
+      "type": "checkbox",
+      "default": "0",
+      "hint": "默认关闭：判定下沉到逐条纠错行。开启后详情区显示批量判正确/判错误/撤销三按钮，本质仍是逐行写 judgment，受同一 version 乐观锁保护。"
     }
   ]
 }

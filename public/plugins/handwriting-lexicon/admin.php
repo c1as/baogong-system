@@ -134,6 +134,8 @@ $cfg = array(
     'review' => array(
         'enabled' => $reviewEnabled,
         'page_size' => min(BGLX_REV_MAX_PAGE, max(1, bglx_rev_setting_int('reviewPageSize', 50))),
+        // v3：整图三按钮默认关闭，改由逐条纠错行承载判定
+        'whole_image_judge' => bglx_rev_setting_bool('wholeImageJudgeEnabled', false),
     ),
     'csrf' => $reviewCsrf,
     'capabilities' => $capabilities,
@@ -396,7 +398,7 @@ if ($cfgJson === false) {
 </div>
 
 <script>window.BGLX_CFG = <?php echo $cfgJson; ?>;</script>
-<script src="assets/admin.js?v=1.1.0"></script>
-<?php if ($reviewEnabled): ?><script src="assets/review.js?v=1.1.1"></script><?php endif; ?>
+<script src="assets/admin.js?v=1.2.0"></script>
+<?php if ($reviewEnabled): ?><script src="assets/review.js?v=1.2.0"></script><?php endif; ?>
 </body>
 </html>

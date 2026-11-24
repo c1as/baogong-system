@@ -447,3 +447,54 @@ textarea { width: 100%; resize: vertical; }
   .bglx-review-correction-row { padding: 8px; }
   .bglx-review-detail-title { font-size: 16px; }
 }
+
+/* ==========================================================================
+ * v3 逐条判定：判定徽标 / 判错高亮 / 完成态（追加，不改动上方既有规则）
+ * ==========================================================================*/
+/* 每行新增判定区后，纠错行从 6 列扩为 7 列（末列仍是删除按钮） */
+.bglx-review-correction-row {
+  grid-template-columns: 92px minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1.2fr) minmax(0, 1fr) auto auto;
+}
+.bglx-review-row-judge {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+  min-width: 96px;
+}
+.bglx-review-judge-badge {
+  display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px;
+  background: #f3f4f6; color: #4b5563; white-space: nowrap;
+}
+.bglx-review-row-judge .bglx-row-judge-btn { padding: 2px 6px; font-size: 11px; }
+.bglx-review-row-judge .bglx-row-judge-btn.is-active {
+  border-color: var(--bglx-primary); color: var(--bglx-primary); background: #eff6ff; font-weight: 600;
+}
+
+/* 三种行级判定徽标 */
+.bglx-badge-unreviewed { background: #f3f4f6; color: #4b5563; }
+.bglx-badge-correct { background: #ecfdf5; color: #047857; }
+.bglx-badge-wrong { background: #fef2f2; color: var(--bglx-red); }
+
+/* 已判行 / 判错行高亮：让「错误 → 正确值」一眼可辨 */
+.bglx-review-row-judged { background: #f8fbff; border-color: #bfdbfe; }
+.bglx-review-row-highlight {
+  background: #fff7f7; border-color: #fecaca;
+  box-shadow: inset 3px 0 0 var(--bglx-red);
+}
+.bglx-review-row-highlight .bglx-review-correct { border-color: #fca5a5; }
+
+/* 全部判完的「审查完成」态 */
+.bglx-review-done {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin: 10px 0; padding: 10px 14px;
+  background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 8px;
+  color: #047857; font-size: 13px;
+}
+.bglx-review-done strong { font-size: 14px; }
+
+@media (max-width: 760px) {
+  .bglx-review-correction-row { display: block; }
+  .bglx-review-row-judge {
+    flex-direction: row; align-items: center; flex-wrap: wrap;
+    margin: 6px 0 8px;
+  }
+  .bglx-review-done { padding: 8px 10px; }
+}

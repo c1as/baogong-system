@@ -21,13 +21,14 @@ $auth->requireAuth();
 $store = bglx_store();
 $action = trim((string)bglx_param('action', ''));
 
-/** 审查动作清单：只读 5 个 + 写 6 个 */
+/** 审查动作清单：只读 5 个 + 写 9 个（v3 新增逐条判定 / 行推断 / 批量快捷） */
 $reviewReadActions = array(
     'review_settings', 'review_list_logs', 'review_list_images',
     'review_image', 'review_stats',
 );
 $reviewWriteActions = array(
-    'review_link', 'review_judge', 'review_save_corrections',
+    'review_link', 'review_judge', 'review_judge_batch', 'review_judge_row',
+    'review_infer_rows', 'review_save_corrections',
     'review_ai_organize', 'review_import_decisions', 'review_delete_draft',
 );
 $reviewActions = array_merge($reviewReadActions, $reviewWriteActions);
@@ -87,14 +88,44 @@ function bglx_rev_api_target()
     }
     $snapshot = bglx_param('snapshot', array());
     $snapshot = is_array($snapshot) ? $snapshot : array();
+    $fields = isset($snapshot['fields']) && is_array($snapshot['fields']) ? $snapshot['fields'] : array();
+    $details = isset($snapshot['items']) && is_array($snapshot['items']) ? $snapshot['items'] : array();
     return $rv->upsert(array(
         'invoke_id' => $invoke,
         'date' => isset($snapshot['date']) ? $snapshot['date'] : '',
         'engine' => isset($snapshot['engine']) ? $snapshot['engine'] : '',
         'duration' => isset($snapshot['duration']) ? $snapshot['duration'] : 0,
-        'recognized_fields' => isset($snapshot['fields']) ? $snapshot['fields'] : array(),
-        'recognized_items' => isset($snapshot['items']) ? $snapshot['items'] : array(),
+        'recognized_fields' => $fields,
+        'recognized_items' => $details,
+        // v3：首次判定即按四类规则落行，row_key 与前端推断一致，避免 40001
+        'corrections' => bglx_rev_infer_rows($details, $fields, array()),
     ));
+}
+
+/**
+ * AI 输入闸门：仅取 judgment=wrong 且正确值非空、未超长的行（G5 红线）。
+ *
+ * 判对行 / 未审行根本不进 prompt；ai_organizer 内部还有一层同构断言。
+ *
+ * @param array $item 审查记录
+ * @return array 判错行列表
+ */
+function bglx_rev_api_wrong_rows($item)
+{
+    $rows = isset($item['corrections']) && is_array($item['corrections'])
+        ? $item['corrections'] : array();
+    $out = array();
+    foreach ($rows as $row) {
+        if (!is_array($row) || (string)(isset($row['judgment']) ? $row['judgment'] : '') !== 'wrong') {
+            continue;
+        }
+        $correct = trim((string)(isset($row['correct_value']) ? $row['correct_value'] : ''));
+        if ($correct === '' || bglx_str_len($correct) > 200) {
+            continue;
+        }
+        $out[] = $row;
+    }
+    return $out;
 }
 
 /**
@@ -413,25 +444,88 @@ try {
             $updated = bglx_rev_store()->patch($item['id'], $patch);
             bglx_rev_store()->appendAudit('review_link', $item['id'], bglx_rev_reviewer(),
                 '人工绑定图片：' . $binding['image_path']);
-            bglx_json(0, array('item' => $updated, 'version' => $updated['version']), '关联已更新');
+            $tail = bglx_rev_after_write();
+            bglx_json(0, array(
+                'item' => $updated, 'version' => $updated['version'], 'warnings' => $tail['warnings'],
+            ), '关联已更新');
             break;
 
-        case 'review_judge':
+        case 'review_judge_row':
             $item = bglx_rev_api_target();
-            $judgment = trim((string)bglx_param('judgment', ''));
-            if (!in_array($judgment, array('correct', 'wrong', 'unreviewed'), true)) {
-                bglx_fail(40001, '判定值不合法（应为 correct / wrong / unreviewed）');
+            $ctx = array('item' => $item, 'reviewer' => bglx_rev_reviewer());
+            $body = bglx_json_body();
+            $fromPost = is_array($_POST);
+            if (array_key_exists('note', $body) || ($fromPost && array_key_exists('note', $_POST))) {
+                $ctx['note'] = (string)bglx_param('note', '');
             }
-            $patch = array(
-                'judgment' => $judgment,
-                'judged_at' => $judgment === 'unreviewed' ? '' : bglx_now(),
-                'status' => $judgment === 'unreviewed' ? 'draft' : 'reviewed',
-                'version' => (int)bglx_param('version', isset($item['version']) ? $item['version'] : 1),
+            if (array_key_exists('extra_variants', $body)
+                || ($fromPost && array_key_exists('extra_variants', $_POST))) {
+                $ctx['extra_variants'] = bglx_param('extra_variants', array());
+            }
+            $data = bglx_rev_judge_row(
+                $item['id'],
+                (string)bglx_param('row_key', ''),
+                (string)bglx_param('judgment', ''),
+                (string)bglx_param('correct_value', ''),
+                (int)bglx_param('version', isset($item['version']) ? $item['version'] : 1),
+                $ctx
             );
-            $updated = bglx_rev_store()->patch($item['id'], $patch);
-            bglx_rev_store()->appendAudit('review_judge', $item['id'], bglx_rev_reviewer(),
-                '判定=' . $judgment);
-            bglx_json(0, array('item' => $updated, 'version' => $updated['version']), '判定已保存');
+            $tail = bglx_rev_after_write();
+            $data['warnings'] = $tail['warnings'];
+            bglx_json(0, $data, '逐条判定已保存');
+            break;
+
+        case 'review_infer_rows':
+            $item = bglx_rev_api_target();
+            $rows = bglx_rev_infer_rows(
+                isset($item['recognized_items']) ? $item['recognized_items'] : array(),
+                isset($item['recognized_fields']) ? $item['recognized_fields'] : array(),
+                isset($item['corrections']) ? $item['corrections'] : array()
+            );
+            bglx_json(0, array(
+                'rows' => $rows,
+                'item_id' => isset($item['id']) ? $item['id'] : '',
+                'version' => isset($item['version']) ? (int)$item['version'] : 1,
+            ), 'ok');
+            break;
+
+        /* 整图批量快捷：默认关闭，开启后本质逐行写 judgment（R14） */
+        case 'review_judge':
+        case 'review_judge_batch':
+            $item = bglx_rev_api_target();
+            if (!bglx_rev_setting_bool('wholeImageJudgeEnabled', false)) {
+                bglx_fail(BGLX_REV_IMMUTABLE, '整图批量判定已关闭，请在逐条纠错区判定');
+            }
+            $rows = bglx_param('rows', array());
+            if (!is_array($rows) || !$rows) {
+                // 兼容旧版单条 judgment 入参：展开到全部纠错行
+                $judgment = trim((string)bglx_param('judgment', ''));
+                $correct = (string)bglx_param('correct_value', '');
+                $rows = array();
+                $existing = isset($item['corrections']) && is_array($item['corrections'])
+                    ? $item['corrections'] : array();
+                foreach ($existing as $c) {
+                    if (!is_array($c) || !isset($c['row_key'])) {
+                        continue;
+                    }
+                    $rows[] = array(
+                        'row_key' => (string)$c['row_key'],
+                        'judgment' => $judgment,
+                        'correct_value' => $correct,
+                    );
+                }
+                if (!$rows) {
+                    bglx_fail(40001, '缺少 rows 参数或没有可判定的纠错行');
+                }
+            }
+            $data = bglx_rev_judge_batch(
+                $item['id'], $rows,
+                (int)bglx_param('version', isset($item['version']) ? $item['version'] : 1),
+                array('item' => $item, 'reviewer' => bglx_rev_reviewer())
+            );
+            $tail = bglx_rev_after_write();
+            $data['warnings'] = $tail['warnings'];
+            bglx_json(0, $data, '批量判定已保存');
             break;
 
         case 'review_save_corrections':
@@ -448,17 +542,34 @@ try {
             $updated = bglx_rev_store()->patch($item['id'], $patch);
             bglx_rev_store()->appendAudit('review_save_corrections', $item['id'], bglx_rev_reviewer(),
                 '草稿保存 ' . count($updated['corrections']) . ' 条纠错');
-            bglx_json(0, array('item' => $updated, 'version' => $updated['version']), '纠错草稿已保存');
+            $tail = bglx_rev_after_write();
+            bglx_json(0, array(
+                'item' => $updated,
+                'version' => $updated['version'],
+                'projection' => bglx_rev_derive_projection($updated['corrections'], $updated),
+                'warnings' => $tail['warnings'],
+            ), '纠错草稿已保存');
             break;
 
         case 'review_ai_organize':
             $item = bglx_rev_api_target();
-            $corrections = isset($item['corrections']) ? $item['corrections'] : array();
-            $result = bglx_rev_ai_organize($corrections, array());
+            // G5 红线：服务端只把判错且填了正确值的行送进 AI，判对行根本不进 prompt
+            $wrongRows = bglx_rev_api_wrong_rows($item);
+            if (!$wrongRows) {
+                $tail = bglx_rev_after_write();
+                bglx_json(0, array(
+                    'ok' => true, 'candidates' => array(), 'wrong_rows' => 0,
+                    'item' => $item,
+                    'version' => isset($item['version']) ? (int)$item['version'] : 1,
+                    'warnings' => $tail['warnings'],
+                ), '无判错行，未生成 AI 候选');
+            }
+            $result = bglx_rev_ai_organize($wrongRows, array());
             if (empty($result['ok'])) {
                 bglx_fail(BGLX_REV_AI_FAILED, 'AI 整理失败：' . $result['reason'], array(
                     'fallback' => (bool)$result['fallback'],
                     'candidates' => array(),
+                    'wrong_rows' => count($wrongRows),
                 ));
             }
             $patch = array(
@@ -467,10 +578,13 @@ try {
             );
             $updated = bglx_rev_store()->patch($item['id'], $patch);
             bglx_rev_store()->appendAudit('review_ai_organize', $item['id'], bglx_rev_reviewer(),
-                'AI 候选 ' . count($result['candidates']) . ' 条，均待人工确认');
+                'AI 候选 ' . count($result['candidates']) . ' 条（判错行 ' . count($wrongRows) . '），均待人工确认');
+            $tail = bglx_rev_after_write();
             bglx_json(0, array(
                 'ok' => true, 'candidates' => $result['candidates'],
+                'wrong_rows' => count($wrongRows),
                 'item' => $updated, 'version' => $updated['version'],
+                'warnings' => $tail['warnings'],
             ), 'AI 整理完成，请人工确认候选');
             break;
 
@@ -484,20 +598,47 @@ try {
             if (!is_array($decisions) || !$decisions) {
                 bglx_fail(40001, 'decisions 不能为空');
             }
+            if ($source === 'manual') {
+                // R07：人工路径仅判错行入库；判对行 / 未审行 / 空正确值一律不产生词条
+                $decisions = array_values(array_filter($decisions, function ($d) {
+                    if (!is_array($d)) {
+                        return false;
+                    }
+                    if (isset($d['judgment']) && (string)$d['judgment'] !== 'wrong') {
+                        return false;
+                    }
+                    $correct = isset($d['correct_value']) ? $d['correct_value']
+                        : (isset($d['standard']) ? $d['standard'] : '');
+                    return trim((string)$correct) !== '';
+                }));
+                if (!$decisions) {
+                    $tail = bglx_rev_after_write();
+                    bglx_json(0, array(
+                        'added' => 0, 'pending' => 0, 'skipped' => 0,
+                        'errors' => array(), 'ids' => array(), 'warnings' => $tail['warnings'],
+                    ), '无判错行，未新增词条');
+                }
+            }
             $result = bglx_rev_import_decisions($decisions, $item['id'], array(
                 'origin' => $source,
+                'only_wrong' => ($source === 'manual'), // importer 内再做一层 defense-in-depth
                 'conflict_policy' => trim((string)bglx_param('conflict_policy', 'ask')),
                 'ai_signatures' => bglx_rev_api_ai_signatures($item), // 防 source 伪造
                 'manual_import_status' => bglx_rev_setting_enum('manualImportStatus',
                     array('active', 'pending'), 'active'),
             ));
-            $updated = bglx_rev_store()->patch($item['id'], array(
-                'status' => 'imported',
-                'import_path' => $source,
-            ));
+            $patch = array('version' => (int)bglx_param('version', isset($item['version']) ? $item['version'] : 1));
+            // 无词条入库不置 imported（架构 §8.3）：全判正确时仍保持 reviewed
+            if ((int)$result['added'] > 0) {
+                $patch['status'] = 'imported';
+                $patch['import_path'] = $source;
+            }
+            $updated = bglx_rev_store()->patch($item['id'], $patch);
             bglx_rev_store()->appendAudit('review_import_decisions', $item['id'], bglx_rev_reviewer(),
                 'added=' . $result['added'] . ' pending=' . $result['pending']
                 . ' skipped=' . $result['skipped'] . ' source=' . $source);
+            $tail = bglx_rev_after_write();
+            $result['warnings'] = $tail['warnings'];
             bglx_json(0, $result, '导入完成');
             break;
 
@@ -510,9 +651,14 @@ try {
                 bglx_fail(40401, '审查记录不存在：' . $id);
             }
             bglx_rev_store()->appendAudit('review_delete_draft', $id, bglx_rev_reviewer(), '撤销草稿');
-            bglx_json(0, array('ok' => true), '草稿已撤销');
+            $tail = bglx_rev_after_write();
+            bglx_json(0, array('ok' => true, 'warnings' => $tail['warnings']), '草稿已撤销');
             break;
     }
+} catch (BglxReviewImmutableException $e) {
+    bglx_fail(BGLX_REV_IMMUTABLE, $e->getMessage());
+} catch (InvalidArgumentException $e) {
+    bglx_fail(40001, $e->getMessage());
 } catch (BglxValidationException $e) {
     bglx_fail(42201, $e->getMessage(), array('errors' => $e->errors));
 } catch (BglxReviewLockException $e) {

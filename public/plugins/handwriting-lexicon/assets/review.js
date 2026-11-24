@@ -267,11 +267,26 @@
     parent.appendChild(table);
   }
 
-  /** 纠错行：错误值自动带入，正确值/补充变体/备注可录入 */
+  /** 手工新增行的稳定键序号，避免与「明细序号:字段」自动行冲突 */
+  var manualRowSeq = 0;
+
+  /** 逐条纠错行：字段 / 错误值 / 正确值 / 变体 / 备注 + 行级判定按钮与徽标 */
   function appendCorrectionRow(parent, correction) {
-    var c = correction || { field: 'partNo', wrong_value: '', correct_value: '', extra_variants: [], note: '' };
+    var c = correction;
+    if (!c) {
+      manualRowSeq++;
+      c = newCorrectionRow('manual:' + manualRowSeq, -1, 'partNo', 'drawing_alias', '');
+    }
+    var judgment = (c.judgment === 'correct' || c.judgment === 'wrong') ? c.judgment : 'unreviewed';
     var row = node('div', 'bglx-review-correction-row');
     row.setAttribute('data-field', c.field || 'partNo');
+    row.setAttribute('data-row-key', c.row_key || '');
+    row.setAttribute('data-detail-index', String(c.detail_index === undefined ? -1 : c.detail_index));
+    row.setAttribute('data-type', c.type || '');
+    row.setAttribute('data-judgment', judgment);
+    row.setAttribute('data-judged-at', c.judged_at || '');
+    if (judgment === 'wrong') { row.classList.add('bglx-review-row-highlight'); }
+    if (judgment !== 'unreviewed') { row.classList.add('bglx-review-row-judged'); }
 
     var select = document.createElement('select');
     Object.keys(FIELD_LABELS).forEach(function (k) {
@@ -288,8 +303,10 @@
     row.appendChild(wrongNode);
     var correct = node('input', 'bglx-review-correct');
     correct.type = 'text';
-    correct.value = c.correct_value || '';
-    correct.placeholder = '正确值';
+    if (c.field === 'char') { correct.placeholder = '正确字（单字符）'; }
+    else if (judgment === 'correct') { correct.placeholder = '判正确，无需填写'; }
+    else { correct.placeholder = '正确值'; }
+    correct.value = judgment === 'wrong' ? (c.correct_value || '') : '';
     row.appendChild(correct);
 
     var extra = node('input', 'bglx-review-extra');
@@ -304,23 +321,45 @@
     note.placeholder = '备注（可选）';
     row.appendChild(note);
 
+    // 行级判定区：徽标 + 正确/错误/撤销三按钮（data-row-key 与行键一致）
+    var judgeBox = node('div', 'bglx-review-row-judge');
+    judgeBox.appendChild(node('span', 'bglx-review-judge-badge bglx-badge-' + judgment,
+      JUDGE_LABELS[judgment]));
+    [['correct', '正确'], ['wrong', '错误'], ['unreviewed', '撤销']].forEach(function (pair) {
+      var cls = 'bglx-btn bglx-btn-mini bglx-row-judge-btn'
+        + (judgment === pair[0] ? ' is-active' : '');
+      var b = button(pair[1], cls, function () {
+        judgeCorrectionRow(state.selected, row, pair[0]);
+      });
+      b.setAttribute('data-row-key', c.row_key || '');
+      b.setAttribute('data-judgment', pair[0]);
+      judgeBox.appendChild(b);
+    });
+    row.appendChild(judgeBox);
+
     row.appendChild(button('删除', 'bglx-btn bglx-btn-mini bglx-btn-danger', function () {
       parent.removeChild(row);
     }));
     parent.appendChild(row);
   }
 
-  /** 收集纠错行 */
+  /** 收集纠错行：输出 row_key / judgment 供服务端持久化与派生 */
   function collectCorrections() {
     var box = el('rv-corrections');
     var out = [];
     if (!box) { return out; }
     Array.prototype.forEach.call(box.querySelectorAll('.bglx-review-correction-row'), function (row) {
       var inputs = row.querySelectorAll('input');
+      var judgment = row.getAttribute('data-judgment') || 'unreviewed';
       out.push({
+        row_key: row.getAttribute('data-row-key') || '',
+        detail_index: parseInt(row.getAttribute('data-detail-index') || '-1', 10),
         field: row.querySelector('select').value,
+        type: row.getAttribute('data-type') || '',
         wrong_value: row.querySelector('.bglx-review-wrong').getAttribute('data-wrong') || '',
-        correct_value: inputs[0].value.trim(),
+        judgment: judgment,
+        judged_at: row.getAttribute('data-judged-at') || '',
+        correct_value: judgment === 'wrong' ? inputs[0].value.trim() : '',
         extra_variants: inputs[1].value.trim(),
         note: inputs[2].value.trim(),
         confirmed: true
@@ -329,26 +368,98 @@
     return out;
   }
 
-  /** 从日志识别结果推断初始纠错行（错误值自动带入） */
-  function inferredCorrections(item) {
-    var saved = Array.isArray(item.corrections) ? item.corrections : [];
-    if (saved.length) { return saved; }
-    var out = [];
-    var fields = item.fields || {};
-    var first = (Array.isArray(item.items) && item.items[0]) ? item.items[0] : {};
-    var seeds = {
-      partNo: first.partNo || fields.partNo || '',
-      process: first.process || fields.process || '',
-      unit: first.unit || fields.unit || '',
-      char: fields.note || ''
+  /** 新建一条未审纠错行；row_key 前后端同构，是幂等合并键 */
+  function newCorrectionRow(key, index, field, type, value) {
+    return {
+      row_key: key,
+      detail_index: index,
+      field: field,
+      type: type,
+      wrong_value: String(value === undefined || value === null ? '' : value).trim(),
+      judgment: 'unreviewed',
+      judged_at: '',
+      correct_value: '',
+      extra_variants: [],
+      confirmed: false,
+      note: ''
     };
-    Object.keys(seeds).forEach(function (k) {
-      out.push({
-        field: k, wrong_value: seeds[k] ? String(seeds[k]) : '',
-        correct_value: '', extra_variants: [], note: '', confirmed: false
+  }
+
+  /**
+   * 服务端同构的四类全覆盖行生成器（架构 §6.1）。
+   * 遍历全部明细行按图号/工序/单位生成，形近字取记录级 note 单行；qty 明确不生成。
+   * 以 row_key 幂等合并存量：已判结果优先，手工添加行与历史行不丢。
+   */
+  function inferCorrectionRows(item) {
+    var saved = Array.isArray(item.corrections) ? item.corrections : [];
+    var seed = {};
+    saved.forEach(function (c) { if (c && c.row_key) { seed[c.row_key] = c; } });
+    var out = [];
+    var used = {};
+    var fields = item.fields || {};
+    var defs = [
+      ['partNo', 'drawing_alias'],
+      ['process', 'process_synonym'],
+      ['unit', 'unit_synonym']
+    ];
+    var items = Array.isArray(item.items) ? item.items.slice(0, 200) : [];
+    items.forEach(function (detail, i) {
+      if (!detail || typeof detail !== 'object') { return; }
+      defs.forEach(function (def) {
+        var field = def[0];
+        var type = def[1];
+        var val = (detail[field] !== undefined && detail[field] !== null && String(detail[field]).trim() !== '')
+          ? detail[field] : (fields[field] !== undefined && fields[field] !== null ? fields[field] : '');
+        if (String(val === null ? '' : val).trim() === '') { return; }
+        var key = i + ':' + field;
+        out.push(seed[key] || newCorrectionRow(key, i, field, type, val));
+        used[key] = true;
       });
     });
-    return out;
+    var note = fields.note === undefined || fields.note === null ? '' : String(fields.note).trim();
+    if (note !== '') {
+      out.push(seed['note:char'] || newCorrectionRow('note:char', -1, 'char', 'char_confusion', note));
+      used['note:char'] = true;
+    }
+    saved.forEach(function (c) {
+      if (!c || !c.row_key || used[c.row_key]) { return; }
+      out.push(c);
+      used[c.row_key] = true;
+    });
+    return out.slice(0, 200);
+  }
+
+  /** 所有纠错行均已判定（correct / wrong），用于「审查完成」态 */
+  function allJudged(rows) {
+    if (!Array.isArray(rows) || !rows.length) { return false; }
+    return rows.every(function (r) {
+      return !!r && (r.judgment === 'correct' || r.judgment === 'wrong');
+    });
+  }
+
+  /** 逐条判定：调 review_judge_row，判错必须填值，判对服务端强清空正确值 */
+  function judgeCorrectionRow(item, row, judgment) {
+    var key = row.getAttribute('data-row-key') || '';
+    if (!key) { notify('该行没有稳定键，请先保存纠错草稿', true); return; }
+    var input = row.querySelector('.bglx-review-correct');
+    var value = input ? input.value.trim() : '';
+    if (judgment === 'wrong' && value === '') {
+      notify('判为错误时必须填写正确值', true);
+      return;
+    }
+    if (judgment !== 'wrong') { value = ''; }
+    api('review_judge_row', {
+      item_id: item.review_id || '', invoke_id: item.invoke_id || '',
+      row_key: key, judgment: judgment, correct_value: value,
+      version: item.version || 1,
+      snapshot: { date: item.date, engine: item.engine, duration: item.duration,
+                  fields: item.fields, items: item.items }
+    }, 'POST').then(function () {
+      notify('逐条判定已保存：' + (JUDGE_LABELS[judgment] || judgment));
+      return refresh();
+    }).catch(function (err) {
+      notify('逐条判定失败：' + err.message + (err.code === 40901 ? '（请刷新后重试）' : ''), true);
+    });
   }
 
   /** AI 候选卡片 */
@@ -406,7 +517,7 @@
   function select(item) {
     state.selected = item;
     state.selectedInvoke = item.invoke_id || '';
-    state.corrections = inferredCorrections(item);
+    state.corrections = inferCorrectionRows(item);
     state.candidates = Array.isArray(item.ai_candidates) ? item.ai_candidates : [];
     var detail = el('rv-detail');
     if (!detail) { return; }
@@ -417,6 +528,8 @@
     var meta = node('p', 'bglx-review-meta', (item.date || '—') + ' · ' + (item.engine || '未知引擎')
       + ' · ' + invokeLabel(item));
     detail.appendChild(meta);
+    // Q4：审查记录独立保留 90 天，不与日志/图片 14 天联动；原图缺失时仍可审文字
+    detail.appendChild(node('p', 'bglx-hint', '提示：超过 14 天的原图如已被主程序清理，此处仅可审查文字，不影响逐条判定。'));
 
     var link = item.link || {};
     detail.appendChild(node('p', 'bglx-review-linkinfo', '关联策略：' + (link.strategy || 'none')
@@ -461,27 +574,50 @@
       detail.appendChild(trace);
     }
 
-    // 判定
-    detail.appendChild(node('h3', 'bglx-review-subtitle', '人工判定'));
-    var judgeBar = node('div', 'bglx-review-judge');
-    [['correct', '正确'], ['wrong', '错误'], ['unreviewed', '撤销判定']].forEach(function (pair) {
-      judgeBar.appendChild(button(pair[1], 'bglx-btn bglx-btn-mini', function () {
-        api('review_judge', {
-          item_id: item.review_id || '', invoke_id: item.invoke_id || '',
-          judgment: pair[0], version: item.version || 1,
-          snapshot: { date: item.date, engine: item.engine, duration: item.duration,
-                      fields: item.fields, items: item.items }
-        }, 'POST').then(function () {
-          notify('判定已保存：' + pair[1]); return refresh();
-        }).catch(function (err) {
-          notify('判定失败：' + err.message + (err.code === 40901 ? '（请刷新后重试）' : ''), true);
-        });
-      }));
-    });
-    detail.appendChild(judgeBar);
+    // 整图三按钮：默认关闭（Q1），开启时降级为批量快捷，本质仍逐行写 judgment
+    if (REV.whole_image_judge) {
+      detail.appendChild(node('h3', 'bglx-review-subtitle', '人工判定（整图批量 · 快捷）'));
+      var judgeBar = node('div', 'bglx-review-judge');
+      [['correct', '全部正确'], ['wrong', '全部错误'], ['unreviewed', '全部撤销']].forEach(function (pair) {
+        judgeBar.appendChild(button(pair[1], 'bglx-btn bglx-btn-mini', function () {
+          var rows = collectCorrections().filter(function (c) { return c.row_key; }).map(function (c) {
+            return {
+              row_key: c.row_key,
+              judgment: pair[0],
+              correct_value: pair[0] === 'wrong' ? (c.correct_value || '') : ''
+            };
+          });
+          if (!rows.length) { notify('没有可判定的逐条纠错行', true); return; }
+          if (pair[0] === 'wrong' && rows.some(function (r) { return !r.correct_value; })) {
+            notify('批量判错误时每行都需先填写正确值', true);
+            return;
+          }
+          api('review_judge', {
+            item_id: item.review_id || '', invoke_id: item.invoke_id || '',
+            rows: rows, version: item.version || 1,
+            snapshot: { date: item.date, engine: item.engine, duration: item.duration,
+                        fields: item.fields, items: item.items }
+          }, 'POST').then(function () {
+            notify('批量判定已保存：' + pair[1]); return refresh();
+          }).catch(function (err) {
+            notify('批量判定失败：' + err.message + (err.code === 40901 ? '（请刷新后重试）' : ''), true);
+          });
+        }));
+      });
+      detail.appendChild(judgeBar);
+    }
+
+    // 全部判完 → 审查完成态（顶层 status 由服务端派生，这里只做只读展示）
+    if (allJudged(state.corrections)) {
+      var done = node('div', 'bglx-review-done');
+      done.appendChild(node('strong', '', '✓ 审查完成'));
+      done.appendChild(node('span', '', '全部 ' + state.corrections.length
+        + ' 条纠错行均已逐条判定，状态已自动派生为 reviewed。'));
+      detail.appendChild(done);
+    }
 
     // 逐条纠错
-    detail.appendChild(node('h3', 'bglx-review-subtitle', '逐条纠错（错误值 → 正确值）'));
+    detail.appendChild(node('h3', 'bglx-review-subtitle', '逐条纠错（错误值 → 正确值，判定请在每行右侧完成）'));
     var corrBox = node('div', 'bglx-review-corrections');
     corrBox.id = 'rv-corrections';
     state.corrections.forEach(function (c) { appendCorrectionRow(corrBox, c); });

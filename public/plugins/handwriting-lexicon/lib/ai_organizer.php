@@ -17,9 +17,40 @@ require_once __DIR__ . '/http.php';
 require_once __DIR__ . '/schema.php';
 
 /**
- * 构造 AI 整理提示词（system + user 两条 messages）。
+ * AI 输入二次闸门（defense-in-depth）：只保留判错且带正确值的行。
+ *
+ * 兼容 schema 1 旧行（无 judgment 字段）：只要 correct_value 非空即视为可整理；
+ * 明确标为 correct / unreviewed 的行一律剔除，杜绝判对值污染词库。
  *
  * @param array $corrections 纠错列表
+ * @return array 判错行列表
+ */
+function bglx_rev_ai_wrong_rows($corrections)
+{
+    $rows = is_array($corrections) ? $corrections : array();
+    $out = array();
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $judgment = isset($row['judgment']) ? (string)$row['judgment'] : '';
+        if ($judgment !== '' && $judgment !== 'wrong') {
+            continue;
+        }
+        $standard = trim((string)(isset($row['correct_value'])
+            ? $row['correct_value'] : (isset($row['standard']) ? $row['standard'] : '')));
+        if ($standard === '') {
+            continue;
+        }
+        $out[] = $row;
+    }
+    return $out;
+}
+
+/**
+ * 构造 AI 整理提示词（system + user 两条 messages）。
+ *
+ * @param array $corrections 纠错列表（内部只取判错行）
  * @param int   $max         候选上限
  * @return array
  */
@@ -30,7 +61,7 @@ function bglx_rev_ai_prompt($corrections, $max)
         . '每个元素字段：type（只能是 drawing_alias/process_synonym/unit_synonym/char_confusion）、'
         . 'standard（正确值）、variants（识别错误值及合理变体数组）、confidence（0~1）、note（简短原因）。'
         . '将相同 standard 的纠错合并；形近字 standard/variants 必须是单个字符。最多 ' . $max . ' 条。';
-    $json = json_encode(is_array($corrections) ? $corrections : array(), JSON_UNESCAPED_UNICODE);
+    $json = json_encode(bglx_rev_ai_wrong_rows($corrections), JSON_UNESCAPED_UNICODE);
     return array(
         array('role' => 'system', 'content' => $system),
         array('role' => 'user', 'content' => $json === false ? '[]' : $json),
@@ -186,9 +217,9 @@ function bglx_rev_ai_organize($corrections, $cfg = array())
     if ($c['key'] === '') {
         return $fail('未配置 AI Key（请在服务端配置）');
     }
-    $corrections = is_array($corrections) ? $corrections : array();
+    $corrections = bglx_rev_ai_wrong_rows($corrections); // 断言：判对行不进 prompt
     if (!$corrections) {
-        return $fail('没有可整理的纠错明细');
+        return $fail('没有可整理的判错明细');
     }
 
     $messages = bglx_rev_ai_prompt($corrections, $c['max']);

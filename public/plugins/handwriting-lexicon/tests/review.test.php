@@ -90,7 +90,11 @@ echo "=== 人工判断审查子系统测试 ===\n\n";
 /* ---------- A. 配置与默认值 ---------- */
 echo "--- A. 配置 ---\n";
 $defaults = bglx_rev_defaults();
-bglx_rev_assert(count($defaults) === 24, 'A1 默认值表恰好 24 项', '实际 ' . count($defaults));
+// v3 基线：原 24 项 + reviewRetentionDays/reviewArchiveEnabled/reviewArchiveDir/wholeImageJudgeEnabled
+bglx_rev_assert(count($defaults) === 28, 'A1 默认值表恰好 28 项（原 24 + v3 新增 4）', '实际 ' . count($defaults));
+bglx_rev_assert($defaults['reviewRetentionDays'] === '90' && $defaults['reviewArchiveEnabled'] === '1'
+    && $defaults['reviewArchiveDir'] === 'review-archive/' && $defaults['wholeImageJudgeEnabled'] === '0',
+    'A1b v3 四项默认配置值正确');
 bglx_rev_assert(bglx_rev_setting('reviewEnabled') === '1', 'A2 BG_PLUGIN_CTX 配置优先');
 $dirs = bglx_rev_setting_list('attachmentDirs');
 bglx_rev_assert(isset($dirs[0]) && $dirs[0] === 'data/uploads/', 'A3 目录列表按顺序解析且保序', json_encode($dirs, JSON_UNESCAPED_UNICODE));
@@ -279,6 +283,96 @@ bglx_bridge_init('review-test');
 $norm = bglx_bridge_norm('partno', 'ZZCONV001');
 bglx_rev_assert($bridgeResult['added'] === 1 && $norm['action'] === 'auto' && $norm['value'] === 'ZZSTANDARD',
     'I2 导入后 bridge 下一次调用命中新词条（R10）', json_encode(array($bridgeResult, $norm), JSON_UNESCAPED_UNICODE));
+
+/* ---------- J. 作者 7 项修复保护回归（F1–F7，零回退） ---------- */
+echo "\n--- J. 作者 7 项修复保护清单 ---\n";
+$srcRoot = dirname(__DIR__);
+$readSource = function ($rel) use ($srcRoot) {
+    $path = $srcRoot . '/' . $rel;
+    return is_file($path) ? (string)@file_get_contents($path) : '';
+};
+$adminJsSrc = $readSource('assets/admin.js');
+$reviewJsSrc = $readSource('assets/review.js');
+$apiPhpSrc = $readSource('api.php');
+$adminPhpSrc = $readSource('admin.php');
+$pluginSrc = $readSource('plugin.json');
+
+// F1 Tab 可切换：admin.js 的 initTabs / bglx:tab 派发 + review.js 的监听
+bglx_rev_assert(strpos($adminJsSrc, 'function initTabs') !== false
+    && strpos($adminJsSrc, 'bglx:tab') !== false, 'J-F1a admin.js initTabs 与事件派发未回退');
+bglx_rev_assert(strpos($reviewJsSrc, "document.addEventListener('bglx:tab'") !== false,
+    'J-F1b review.js bglx:tab 监听未回退');
+
+// F2 字段映射：消费归一化结果，no/proc/qty 映射链保持可用
+$fusionRow = array(
+    'items' => array(array('no' => 'TD90535R184', 'proc' => '铣光2', 'qty' => '204')),
+    'fields' => array('date' => '2026-11-24'),
+);
+$projected = bglx_rev_project_log($fusionRow, array('mask_sensitive' => false));
+bglx_rev_assert(isset($projected['items'][0])
+    && (string)$projected['items'][0]['partNo'] === 'TD90535R184'
+    && (string)$projected['items'][0]['process'] === '铣光2'
+    && (string)$projected['items'][0]['qty'] === '204', 'J-F2 no/proc/qty 映射链未回退');
+
+// F3 过滤 match 空记录
+bglx_rev_assert(bglx_rev_log_matches(array('kind' => 'match', 'engine' => 'x', 'items' => array()), array()) === false,
+    'J-F3 kind=match 空记录仍被过滤');
+
+// F4 稳定键 + 徽标 + invokeLabel
+bglx_rev_assert(strpos($apiPhpSrc, "'log-' . substr(sha1(") !== false,
+    'J-F4a api.php log-<sha1> 稳定键生成段未回退');
+bglx_rev_assert(strpos($reviewJsSrc, "indexOf('log-') === 0 ? '日志记录'") !== false,
+    'J-F4b invokeLabel() 未回退');
+bglx_rev_assert(strpos($reviewJsSrc, 'JUDGE_LABELS[item.judgment]') !== false,
+    'J-F4c 列表判定徽标渲染未回退');
+
+// F5 目录默认值（plugin.json 逐字比对）
+$pluginDoc = json_decode($pluginSrc, true);
+$pluginSettings = array();
+if (is_array($pluginDoc) && isset($pluginDoc['settings']) && is_array($pluginDoc['settings'])) {
+    foreach ($pluginDoc['settings'] as $ps) {
+        if (is_array($ps) && isset($ps['key'])) {
+            $pluginSettings[$ps['key']] = $ps;
+        }
+    }
+}
+bglx_rev_assert(isset($pluginSettings['attachmentDirs'], $pluginSettings['logDir'])
+    && (string)$pluginSettings['attachmentDirs']['default'] === 'images/attachments/'
+    && (string)$pluginSettings['logDir']['default'] === 'ocr-logs/',
+    'J-F5 attachmentDirs/logDir 默认值未漂移');
+bglx_rev_assert(isset($pluginSettings['reviewRetentionDays'], $pluginSettings['reviewArchiveEnabled'],
+    $pluginSettings['reviewArchiveDir'], $pluginSettings['wholeImageJudgeEnabled']),
+    'J-F5b v3 四项新配置已追加到 plugin.json');
+
+// F6 脚本缓存版本参数：只递增版本号，不改标签结构
+bglx_rev_assert(strpos($adminPhpSrc, 'admin.js?v=1.2.0') !== false
+    && strpos($adminPhpSrc, 'review.js?v=1.2.0') !== false,
+    'J-F6 admin.php ?v= 已递增到 1.2.0');
+
+// F7 主程序入口兼容：插件侧入口与接口签名保持不变
+bglx_rev_assert(isset($pluginDoc['entry']) && (string)$pluginDoc['entry'] === 'handler.php'
+    && is_file($srcRoot . '/handler.php'), 'J-F7a 插件入口 handler.php 未变');
+bglx_rev_assert(function_exists('bglx_rev_bootstrap') && function_exists('bglx_rev_require_enabled')
+    && function_exists('bglx_rev_verify_write') && function_exists('bglx_rev_setting'),
+    'J-F7b 插件侧对外函数签名保持兼容');
+
+/* ---------- K. v3 写入闸门无旁路 ---------- */
+echo "\n--- K. v3 token / POST / CSRF / 白名单 ---\n";
+bglx_rev_assert(strpos($apiPhpSrc, "'review_judge_row'") !== false
+    && strpos($apiPhpSrc, "'review_infer_rows'") !== false
+    && strpos($apiPhpSrc, "'review_judge_batch'") !== false,
+    'K1 三个 v3 新动作已登记到 API 动作清单');
+bglx_rev_assert(strpos($apiPhpSrc, '$auth->requireAuth()') !== false
+    && strpos($apiPhpSrc, 'bglx_rev_verify_write()') !== false,
+    'K2 写动作沿用 token 鉴权 + POST + CSRF 校验');
+bglx_rev_assert(strpos((string)@file_get_contents(dirname(__DIR__) . '/lib/review.php'),
+    "if (!bglx_is_post())") !== false, 'K3 bglx_rev_verify_write() 强制 POST 未被改写');
+bglx_rev_assert(strpos($apiPhpSrc, 'BGLX_REV_VERSION_CONFLICT') !== false
+    && strpos($apiPhpSrc, 'BglxReviewLockException') !== false,
+    'K4 乐观锁冲突仍映射 40901');
+bglx_rev_assert(strpos($apiPhpSrc, 'bglx_rev_api_wrong_rows') !== false
+    && strpos($apiPhpSrc, 'bglx_rev_after_write()') !== false,
+    'K5 AI 过滤闸门与写后归档收尾已接线');
 
 echo "\n=== 结果：通过 " . $pass . " 项，失败 " . $fail . " 项 ===\n";
 exit($fail > 0 ? 1 : 0);
