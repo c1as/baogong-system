@@ -1,10 +1,69 @@
 {
   "schema": "baogong-plugin-index/1",
-  "generatedAt": "2026-11-24T11:19:28Z",
+  "generatedAt": "2026-11-24T13:13:24Z",
   "source": {
     "repo": "c1as/baogong-system",
     "branch": "plugin",
     "tagPattern": "plugin-<id>-vX.Y.Z"
   },
-  "plugins": []
+  "plugins": [
+    {
+      "name": "模拟识别（演示）",
+      "version": "0.1.0",
+      "description": "不调用任何外部服务，按零件库随机生成一张示例报工单的识别结果，用于验证拍照识别与自动填充流程。",
+      "author": "报工系统",
+      "capabilities": [
+        "report.ocr"
+      ],
+      "entry": "handler.php",
+      "settings": [
+        {
+          "key": "rows",
+          "label": "识别明细行数",
+          "type": "number",
+          "default": "2",
+          "hint": "1-6 行，模拟识别返回的明细条数"
+        },
+        {
+          "key": "dateMode",
+          "label": "日期取值",
+          "type": "select",
+          "default": "today",
+          "options": [
+            {
+              "value": "today",
+              "label": "当天"
+            },
+            {
+              "value": "yesterday",
+              "label": "前一天"
+            }
+          ]
+        },
+        {
+          "key": "engineLabel",
+          "label": "引擎名称（仅展示）",
+          "type": "text",
+          "default": "mock-ocr",
+          "placeholder": "mock-ocr"
+        },
+        {
+          "key": "apiKey",
+          "label": "接口密钥",
+          "type": "password",
+          "placeholder": "演示用，可留空",
+          "hint": "保存后回显为 ********，仅用于演示配置项存储"
+        }
+      ],
+      "id": "mock-ocr",
+      "tag": "plugin-mock-ocr-v0.1.0",
+      "releasedAt": "2026-11-24T13:13:24Z",
+      "package": {
+        "name": "plugin-mock-ocr-v0.1.0.zip",
+        "url": "https://api.github.com/repos/c1as/baogong-system/releases/assets/787265975",
+        "sha256": "70365a44ae1965a5b502c317a96b089828e78d5f8f63d77ae431958b306a76b5",
+        "size": 2798
+      }
+    }
+  ]
 }
