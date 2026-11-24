@@ -14,6 +14,18 @@ $BG_ROOT = dirname(__DIR__);
 require_once __DIR__ . '/lib/net.php';
 $BG_THROW = false;
 
+/** 系统版本号（供插件市场 minSystemVersion 判定，与前端缓存号一致） */
+if (!function_exists('bg_app_version')) {
+    function bg_app_version()
+    {
+        return '2.6.0';
+    }
+}
+
+/* 插件市场后端（v1.1 双目录策略）：定义 bg_pm_* 系列类与函数。
+   放在 net.php 之后，因为市场逻辑复用 bg_http()/bg_json()/bg_fail() 等基础函数。 */
+require_once __DIR__ . '/lib/plugin_market.php';
+
 /* ================================================================ 输出工具 */
 
 function bg_json($status, $data)
@@ -2056,6 +2068,12 @@ function bg_plugin_manifest($file)
 
 function bg_plugin_all()
 {
+    // v1.1：合并扫描必备区(public/plugins) + 市场区(data/market-plugins)，同名 market 优先。
+    // 市场插件所在目录名 == id，bg_plugin_manifest() 的目录名校验天然满足。
+    if (function_exists('bg_pm_all_plugins')) {
+        return bg_pm_all_plugins();
+    }
+    // 兜底：市场模块未加载时保持原行为（只读必备区）
     $list = array();
     $dir = bg_plugins_dir();
     if (!is_dir($dir)) {
@@ -3183,7 +3201,7 @@ switch ($action) {
             'imageBase' => 'api.php?action=image&f=',
             'counts' => bg_bootstrap_counts($pdo),
             'firstDate' => $first,
-            'version' => '2.7',
+            'version' => '2.6',
         ));
         break;
 
@@ -3675,6 +3693,167 @@ switch ($action) {
         echo "\xEF\xBB\xBF" . implode("\r\n", $lines) . "\r\n";
         exit;
 
+
+    /* ============================ 插件市场（v1.1 · 双目录策略） ============================ */
+
+    case 'plugin.market.capabilities':
+        bg_json(200, bg_pm_capabilities());
+        break;
+
+    case 'plugin.source.get':
+        $sc = new BG_PM_SourceConfig();
+        bg_json(200, array('source' => $sc->publicView()));
+        break;
+
+    case 'plugin.source.save':
+        if ($method !== 'POST') {
+            bg_fail(405, '请求方法不支持');
+        }
+        $sc = new BG_PM_SourceConfig();
+        $b = bg_body();
+        $name = isset($b['name']) && is_string($b['name']) ? trim($b['name']) : '';
+        $url = isset($b['url']) && is_string($b['url']) ? trim($b['url']) : '';
+        $token = isset($b['token']) && is_string($b['token']) ? trim($b['token']) : '';
+        $keep = ($token === '' || $token === '********');
+        $cfg = $sc->save($name, $url, $token, $keep);
+        bg_json(200, array('ok' => true, 'source' => $sc->publicView($cfg)));
+        break;
+
+    case 'plugin.source.test':
+        if ($method !== 'POST') {
+            bg_fail(405, '请求方法不支持');
+        }
+        $b = bg_body();
+        $url = isset($b['url']) && is_string($b['url']) ? trim($b['url']) : '';
+        $token = isset($b['token']) && is_string($b['token']) ? trim($b['token']) : '';
+        $ic = new BG_PM_IndexClient();
+        $res = $ic->test($url, $token);
+        bg_json(200, $res);
+        break;
+
+    case 'plugin.market.list':
+        $force = isset($_GET['refresh']) && $_GET['refresh'] === '1';
+        $ic = new BG_PM_IndexClient();
+        $idx = $ic->fetch($force);
+        $sc = new BG_PM_SourceConfig();
+        $vu = new BG_PM_VersionUtil();
+        $scanner = new BG_PM_Scanner();
+        $local = $scanner->scanAll();
+        $items = array();
+        $upgradeCount = 0;
+        foreach ($idx['plugins'] as $id => $remote) {
+            $item = $remote;
+            $loc = isset($local[$id]) ? $local[$id] : null;
+            $item['localVersion'] = $loc ? $loc['version'] : null;
+            $item['enabled'] = $loc ? (bool)$loc['enabled'] : null;
+            $item['hasCheck'] = $loc ? ($loc['check'] !== '') : false;
+            $item['source'] = $loc ? $loc['source'] : null;
+            $item['packageSize'] = $remote['package']['size'];
+            if (!$loc) {
+                $item['status'] = 'installable';
+            } elseif ($vu->compare($loc['version'], $remote['version']) < 0 && $vu->systemAtLeast($remote['minSystemVersion'])) {
+                $item['status'] = 'upgradable';
+                $upgradeCount++;
+            } elseif ($vu->compare($loc['version'], $remote['version']) === 0) {
+                $item['status'] = 'installed';
+            } else {
+                $item['status'] = 'local_newer';
+            }
+            $items[] = $item;
+        }
+        // 归并索引中不存在、但本地已装的插件（unmanaged）
+        foreach ($local as $id => $loc) {
+            if (isset($idx['plugins'][$id])) {
+                continue;
+            }
+            $items[] = array(
+                'id' => $id,
+                'name' => $loc['name'],
+                'version' => $loc['version'],
+                'description' => $loc['description'],
+                'author' => $loc['author'],
+                'capabilities' => $loc['capabilities'],
+                'changelog' => '',
+                'minSystemVersion' => '',
+                'localVersion' => $loc['version'],
+                'enabled' => (bool)$loc['enabled'],
+                'hasCheck' => $loc['check'] !== '',
+                'source' => $loc['source'],
+                'packageSize' => 0,
+                'status' => 'unmanaged',
+            );
+        }
+        bg_json(200, array(
+            'source' => $sc->publicView(),
+            'items' => $items,
+            'upgradeCount' => $upgradeCount,
+            'fetchedAt' => $idx['_fetchedAt'],
+            'cached' => (bool)$idx['_cached'],
+        ));
+        break;
+
+    case 'plugin.market.detail':
+        $id = isset($_GET['id']) && is_string($_GET['id']) ? $_GET['id'] : '';
+        if (!bg_pm_valid_id($id)) {
+            bg_fail(400, '插件标识不合法');
+        }
+        $ic = new BG_PM_IndexClient();
+        $idx = $ic->fetch(false);
+        if (!isset($idx['plugins'][$id])) {
+            bg_fail(404, '索引中无此插件');
+        }
+        $item = $idx['plugins'][$id];
+        $scanner = new BG_PM_Scanner();
+        $local = $scanner->scanAll();
+        $loc = isset($local[$id]) ? $local[$id] : null;
+        bg_json(200, array(
+            'item' => $item,
+            'local' => $loc ? array('version' => $loc['version'], 'enabled' => (bool)$loc['enabled'], 'source' => $loc['source']) : null,
+            'changelog' => $item['changelog'],
+            'minSystemVersion' => $item['minSystemVersion'],
+        ));
+        break;
+
+    case 'plugin.market.install':
+        if ($method !== 'POST') {
+            bg_fail(405, '请求方法不支持');
+        }
+        $b = bg_body();
+        $id = isset($b['id']) && is_string($b['id']) ? $b['id'] : '';
+        $ver = isset($b['version']) && is_string($b['version']) ? trim($b['version']) : '';
+        (new BG_PM_Installer())->install($id, $ver);
+        break;
+
+    case 'plugin.market.upgrade':
+        if ($method !== 'POST') {
+            bg_fail(405, '请求方法不支持');
+        }
+        $b = bg_body();
+        $id = isset($b['id']) && is_string($b['id']) ? $b['id'] : '';
+        $ver = isset($b['version']) && is_string($b['version']) ? trim($b['version']) : '';
+        (new BG_PM_Installer())->upgrade($id, $ver);
+        break;
+
+    case 'plugin.market.uninstall':
+        if ($method !== 'POST') {
+            bg_fail(405, '请求方法不支持');
+        }
+        $b = bg_body();
+        $id = isset($b['id']) && is_string($b['id']) ? $b['id'] : '';
+        if (!isset($b['confirm']) || $b['confirm'] !== true) {
+            bg_fail(400, '请先确认卸载操作');
+        }
+        (new BG_PM_Installer())->uninstall($id);
+        break;
+
+    case 'plugin.market.rollback':
+        if ($method !== 'POST') {
+            bg_fail(405, '请求方法不支持');
+        }
+        $b = bg_body();
+        $id = isset($b['id']) && is_string($b['id']) ? $b['id'] : '';
+        (new BG_PM_Installer())->rollback($id);
+        break;
 
     case 'plugins.list':
         $list = array();
@@ -4289,51 +4468,9 @@ switch ($action) {
         }
         $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
         $types = array('jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'png' => 'image/png', 'webp' => 'image/webp', 'pdf' => 'application/pdf');
-        $ctype = isset($types[$ext]) ? $types[$ext] : 'application/octet-stream';
-        $size = filesize($path);
-        header('Content-Type: ' . $ctype);
-        header('Accept-Ranges: bytes');
+        header('Content-Type: ' . $types[$ext]);
+        header('Content-Length: ' . filesize($path));
         header('Cache-Control: public, max-age=31536000, immutable');
-        if ($ext === 'pdf') {
-            header('Content-Disposition: inline; filename="' . rawurlencode(basename($path)) . '"');
-            $range = isset($_SERVER['HTTP_RANGE']) ? (string)$_SERVER['HTTP_RANGE'] : '';
-            if ($range !== '' && preg_match('/bytes=(\d*)-(\d*)/', $range, $m)) {
-                $start = 0;
-                $end = $size - 1;
-                if ($m[1] === '' && $m[2] !== '') {
-                    $start = max(0, $size - (int)$m[2]);
-                } else {
-                    $start = (int)$m[1];
-                    if ($m[2] !== '') {
-                        $end = min((int)$m[2], $size - 1);
-                    }
-                }
-                if ($start > $end || $start >= $size) {
-                    header('HTTP/1.1 416 Range Not Satisfiable');
-                    header('Content-Range: bytes */' . $size);
-                    exit;
-                }
-                header('HTTP/1.1 206 Partial Content');
-                header('Content-Range: bytes ' . $start . '-' . $end . '/' . $size);
-                header('Content-Length: ' . ($end - $start + 1));
-                $fp = fopen($path, 'rb');
-                if ($fp) {
-                    fseek($fp, $start);
-                    $left = $end - $start + 1;
-                    while ($left > 0 && !feof($fp)) {
-                        $chunk = fread($fp, min(65536, $left));
-                        if ($chunk === false) {
-                            break;
-                        }
-                        echo $chunk;
-                        $left -= strlen($chunk);
-                    }
-                    fclose($fp);
-                }
-                exit;
-            }
-        }
-        header('Content-Length: ' . $size);
         readfile($path);
         exit;
 
