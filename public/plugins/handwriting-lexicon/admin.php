@@ -397,6 +397,6 @@ if ($cfgJson === false) {
 
 <script>window.BGLX_CFG = <?php echo $cfgJson; ?>;</script>
 <script src="assets/admin.js?v=1.1.0"></script>
-<?php if ($reviewEnabled): ?><script src="assets/review.js?v=1.1.0"></script><?php endif; ?>
+<?php if ($reviewEnabled): ?><script src="assets/review.js?v=1.1.1"></script><?php endif; ?>
 </body>
 </html>

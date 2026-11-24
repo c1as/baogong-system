@@ -136,6 +136,13 @@
     return '（无图号）';
   }
 
+  /** 日志标识展示：合成键（log-*）不显示原始哈希 */
+  function invokeLabel(item) {
+    var inv = item && item.invoke_id ? String(item.invoke_id) : '';
+    if (inv === '') { return '无 invokeId'; }
+    return inv.indexOf('log-') === 0 ? '日志记录' : inv;
+  }
+
   /** 日志列表卡片 */
   function renderList() {
     var box = el('rv-list');
@@ -173,7 +180,7 @@
       var info = node('div', 'bglx-review-card-info');
       info.appendChild(node('strong', 'bglx-review-partno', partNoOf(item)));
       info.appendChild(node('span', 'bglx-review-engine', item.engine || '未知引擎'));
-      info.appendChild(node('span', 'bglx-review-invoke', item.invoke_id || '无 invokeId'));
+      info.appendChild(node('span', 'bglx-review-invoke', invokeLabel(item)));
       var strategy = item.link && item.link.strategy ? item.link.strategy : 'none';
       var conf = item.link && item.link.confidence ? Number(item.link.confidence).toFixed(2) : '0.00';
       info.appendChild(node('span', 'bglx-review-link', '关联：' + strategy + ' / ' + conf
@@ -408,7 +415,7 @@
 
     detail.appendChild(node('h2', 'bglx-review-detail-title', partNoOf(item)));
     var meta = node('p', 'bglx-review-meta', (item.date || '—') + ' · ' + (item.engine || '未知引擎')
-      + ' · ' + (item.invoke_id || '无 invokeId'));
+      + ' · ' + invokeLabel(item));
     detail.appendChild(meta);
 
     var link = item.link || {};

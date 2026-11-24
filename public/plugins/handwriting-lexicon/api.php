@@ -349,9 +349,23 @@ try {
             ));
             foreach ($linked as $k => $log) {
                 $inv = isset($log['invoke_id']) ? (string)$log['invoke_id'] : '';
+                // 主程序日志没有 invokeId 时，用日志内容生成稳定键，保证判定/纠错可落库并回显
+                if ($inv === '') {
+                    $seed = (isset($log['date']) ? $log['date'] : '') . '|'
+                        . (isset($log['ts']) ? $log['ts'] : '') . '|'
+                        . (isset($log['engine']) ? $log['engine'] : '') . '|'
+                        . json_encode(array(
+                            isset($log['fields']) ? $log['fields'] : array(),
+                            isset($log['items']) ? $log['items'] : array(),
+                        ), JSON_UNESCAPED_UNICODE);
+                    $inv = 'log-' . substr(sha1($seed), 0, 20);
+                    $linked[$k]['invoke_id'] = $inv;
+                }
                 $saved = ($inv !== '' && isset($stored[$inv])) ? $stored[$inv] : array();
                 $linked[$k]['review_id'] = isset($saved['id']) ? $saved['id'] : '';
                 $linked[$k]['version'] = isset($saved['version']) ? (int)$saved['version'] : 1;
+                $linked[$k]['judgment'] = (isset($saved['judgment']) && $saved['judgment'] !== '')
+                    ? $saved['judgment'] : 'unreviewed';
                 $linked[$k]['corrections'] = isset($saved['corrections']) ? $saved['corrections'] : array();
                 $linked[$k]['ai_candidates'] = isset($saved['ai_candidates']) ? $saved['ai_candidates'] : array();
                 $linked[$k]['import_path'] = isset($saved['import_path']) ? $saved['import_path'] : '';
