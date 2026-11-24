@@ -60,7 +60,7 @@ function renderShell() {
               state.marketUpgradeCount > 0 ? '' : ' hidden'
             }>${state.marketUpgradeCount}</span></a>
             <a href="/plugins/handwriting-lexicon/admin.php" target="_blank" rel="noopener">${icon('list', 16)}<span>手写字词库管理</span></a>
-            <div class="settings-ver">v${state.version || '3.2'} · 数据保存在服务器</div>
+            <div class="settings-ver">v${state.version || '3.3'} · 数据保存在服务器</div>
           </div>
         </div>
       </header>

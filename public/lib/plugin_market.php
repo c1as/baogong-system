@@ -866,6 +866,12 @@ class BG_PM_Installer
         if (!bg_pm_ensure_dir($root)) {
             bg_fail(500, '市场插件目录不可写');
         }
+        // 清理失败中断遗留的临时解压目录（超过 1 小时）
+        foreach ((array)@glob($root . '/.tmp-*') as $stale) {
+            if (is_dir($stale) && @filemtime($stale) < time() - 3600) {
+                bg_pm_rmrf($stale);
+            }
+        }
         $src = new BG_PM_SourceConfig();
         $cfg = $src->load();
         $fetcher = new BG_PM_PackageFetcher();
@@ -878,11 +884,16 @@ class BG_PM_Installer
             if (!bg_pm_assert_safe_path($tmpDir, $root)) {
                 bg_fail(500, '解压路径越界');
             }
-            if (!$inspector->extract($tmpZip, $tmpDir)) {
+            // 解压到以插件 id 命名的子目录：bg_plugin_manifest() 要求目录名 == id
+            $stage = $tmpDir . '/' . $id;
+            if (!@mkdir($stage, 0755, true)) {
+                bg_fail(500, '解压目录创建失败');
+            }
+            if (!$inspector->extract($tmpZip, $stage)) {
                 bg_fail(422, '插件包解压失败');
             }
             // 二次清单校验（要求目录名==id）
-            $manifest = bg_plugin_manifest($tmpDir . '/plugin.json');
+            $manifest = bg_plugin_manifest($stage . '/plugin.json');
             if (!$manifest || $manifest['id'] !== $id) {
                 bg_fail(422, '解压后的插件清单不合法');
             }
@@ -896,14 +907,18 @@ class BG_PM_Installer
                 }
             }
             // 原子生效
-            if (!@rename($tmpDir, $target)) {
+            if (!@rename($stage, $target)) {
                 if ($bak !== '') {
                     @rename($bak, $target);
                 }
                 bg_fail(500, '插件生效失败，已回滚');
             }
             @unlink($tmpZip);
+            if (is_dir($tmpDir)) {
+                bg_pm_rmrf($tmpDir);
+            }
             // 保留 .bak-* 供 rollback 回退（P1）；清理策略由后续定期任务处理，不在此即时删除
+            $manifest['source'] = 'market';
             return $manifest;
         } catch (Throwable $e) {
             @unlink($tmpZip);
