@@ -37,6 +37,7 @@ function route() {
   if (key === 'stats') return viewStats();
   if (key === 'data') return viewDataStats();
   if (key === 'settings') return viewSettings();
+  if (key === 'market') return viewMarket();
 
   location.replace('#/parts');
 }

@@ -1,7 +1,7 @@
 /* 模块: core/api
    职责: 统一请求封装、登录态与插件刷新、OCR 引擎选择
    依赖: core/store
-   导出: api refreshState refreshPlugins ocrPlugins isFusionPlugin storedOcrEngine setStoredOcrEngine activeOcrPlugin
+   导出: api refreshState refreshPlugins refreshMarketBadge ocrPlugins isFusionPlugin storedOcrEngine setStoredOcrEngine activeOcrPlugin
    注意: api() 内部统一处理 401 与错误提示 */
 'use strict';
 
@@ -46,6 +46,7 @@ async function refreshState() {
   state.imageBase = data.imageBase || '/img/';
   state.counts = data.counts || { parts: 0, orders: 0, reports: 0, items: 0 };
   state.firstDate = data.firstDate || '';
+  state.version = data.version || '';
   partCache.clear();
 }
 
@@ -56,6 +57,26 @@ async function refreshPlugins() {
   } catch (err) {
     if (err.status === 401) throw err;
     state.plugins = [];
+  }
+}
+
+/* 插件市场角标：非阻塞加载升级数量，失败静默 */
+async function refreshMarketBadge() {
+  try {
+    const data = await api('GET', 'api.php?action=plugin.market.list');
+    state.marketUpgradeCount = Number(data.upgradeCount) || 0;
+  } catch {
+    state.marketUpgradeCount = 0;
+  }
+  const badge = $('#marketBadge');
+  if (badge) {
+    const n = state.marketUpgradeCount;
+    if (n > 0) {
+      badge.textContent = n;
+      badge.hidden = false;
+    } else {
+      badge.hidden = true;
+    }
   }
 }
 

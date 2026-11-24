@@ -35,6 +35,7 @@ async function boot() {
     await refreshPlugins();
     hideLogin();
     renderShell();
+    refreshMarketBadge();
     if (!location.hash) history.replaceState(null, '', '#/parts');
     route();
   } catch (err) {

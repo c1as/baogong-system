@@ -56,8 +56,11 @@ function renderShell() {
           <div class="settings-menu" id="settingsMenu" hidden>
             <button type="button" data-action="backup">${icon('database', 16)}<span>数据备份</span></button>
             <a href="#/settings">${icon('settings', 16)}<span>识别插件设置</span></a>
+            <a href="#/market">${icon('store', 16)}<span>插件市场</span><span class="nav-badge" id="marketBadge"${
+              state.marketUpgradeCount > 0 ? '' : ' hidden'
+            }>${state.marketUpgradeCount}</span></a>
             <a href="/plugins/handwriting-lexicon/admin.php" target="_blank" rel="noopener">${icon('list', 16)}<span>手写字词库管理</span></a>
-            <div class="settings-ver">v${state.version || '2.8'} · 数据保存在服务器</div>
+            <div class="settings-ver">v${state.version || '3.0'} · 数据保存在服务器</div>
           </div>
         </div>
       </header>

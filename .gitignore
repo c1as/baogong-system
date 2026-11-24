@@ -1,4 +1,5 @@
 data/
+public/.cache/
 server.log
 server.pid
 app.env

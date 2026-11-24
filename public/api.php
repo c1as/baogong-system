@@ -14,6 +14,14 @@ $BG_ROOT = dirname(__DIR__);
 require_once __DIR__ . '/lib/net.php';
 $BG_THROW = false;
 
+/** 系统版本号（供插件市场 minSystemVersion 判定，与前端缓存号一致） */
+if (!function_exists('bg_app_version')) {
+    function bg_app_version()
+    {
+        return '3.0.0';
+    }
+}
+
 require_once __DIR__ . '/lib/http.php';
 require_once __DIR__ . '/lib/config.php';
 require_once __DIR__ . '/lib/db.php';
@@ -27,6 +35,7 @@ require_once __DIR__ . '/lib/plugin.php';
 require_once __DIR__ . '/lib/log.php';
 require_once __DIR__ . '/lib/query.php';
 require_once __DIR__ . '/lib/match.php';
+require_once __DIR__ . '/lib/plugin_market.php';
 
 $BG_CFG = bg_load_env($BG_ROOT . '/app.env');
 $APP_PASSWORD = isset($BG_CFG['APP_PASSWORD']) ? $BG_CFG['APP_PASSWORD'] : '';
@@ -123,6 +132,16 @@ $ACTIONS = array(
     'plugin.invoke' => array('plugins', 'plugin_invoke'),
     'plugin.check' => array('plugins', 'plugin_check'),
     'net.check' => array('plugins', 'net_check'),
+    'plugin.market.capabilities' => array('market', 'plugin_market_capabilities'),
+    'plugin.source.get' => array('market', 'plugin_source_get'),
+    'plugin.source.save' => array('market', 'plugin_source_save'),
+    'plugin.source.test' => array('market', 'plugin_source_test'),
+    'plugin.market.list' => array('market', 'plugin_market_list'),
+    'plugin.market.detail' => array('market', 'plugin_market_detail'),
+    'plugin.market.install' => array('market', 'plugin_market_install'),
+    'plugin.market.upgrade' => array('market', 'plugin_market_upgrade'),
+    'plugin.market.uninstall' => array('market', 'plugin_market_uninstall'),
+    'plugin.market.rollback' => array('market', 'plugin_market_rollback'),
     'image' => array('images', 'image'),
 );
 

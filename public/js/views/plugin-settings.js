@@ -193,7 +193,8 @@ function viewSettings() {
   setHead(
     '识别插件',
     '拍照识别以插件形式接入，可在这里启用、配置与测试',
-    `<a class="btn btn-ghost" href="#/reports/new">${icon('back', 16)}返回新增报工</a>`
+    `<a class="btn btn-ghost" href="#/market">${icon('store', 16)}插件市场</a>
+     <a class="btn btn-ghost" href="#/reports/new">${icon('back', 16)}返回新增报工</a>`
   );
 
   const view = $('#view');

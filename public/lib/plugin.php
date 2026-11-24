@@ -172,6 +172,12 @@ function bg_plugin_manifest($file)
 
 function bg_plugin_all()
 {
+    // v1.1：合并扫描必备区(public/plugins) + 市场区(data/market-plugins)，同名 market 优先。
+    // 市场插件所在目录名 == id，bg_plugin_manifest() 的目录名校验天然满足。
+    if (function_exists('bg_pm_all_plugins')) {
+        return bg_pm_all_plugins();
+    }
+    // 兜底：市场模块未加载时保持原行为（只读必备区）
     $list = array();
     $dir = bg_plugins_dir();
     if (!is_dir($dir)) {

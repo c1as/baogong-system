@@ -11,6 +11,7 @@ const state = {
   imageBase: '/img/',
   counts: { parts: 0, orders: 0, reports: 0, items: 0 },
   firstDate: '',
+  marketUpgradeCount: 0,
 };
 
 /* 远程数据：零件对象按 id 缓存，供工序、名称、单价回显 */

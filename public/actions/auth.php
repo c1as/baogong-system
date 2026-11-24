@@ -82,7 +82,7 @@ function act_bootstrap()
         'imageBase' => 'api.php?action=image&f=',
         'counts' => bg_bootstrap_counts($pdo),
         'firstDate' => $first,
-        'version' => '2.9',
+        'version' => '3.0',
     ));
     return;
 }
