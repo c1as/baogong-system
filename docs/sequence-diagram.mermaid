@@ -1,5 +1,6 @@
 %% 报工系统 · 插件市场 —— 四段程序调用时序图
-%% 来源：docs/插件市场-架构设计.md §A.4
+%% 来源：docs/插件市场-架构设计.md §A.4（v1.1 增量修订：双目录策略）
+%% v1.1 变更：扫描合并两目录；安装/升级只写 data/market-plugins/；卸载只删市场副本、必备插件受保护并回落基线
 
 %% ===== A.4.1 拉取索引并展示列表 =====
 sequenceDiagram
@@ -12,7 +13,7 @@ sequenceDiagram
     participant IC as IndexClient
     participant VH as VersionUtil
     participant GH as api.github.com
-    participant LOC as bg_plugin_all()
+    participant LOC as bg_plugin_all()（双目录合并扫描）
 
     U->>UI: 进入设置 → 插件市场
     UI->>API: GET api.php?action=plugin.market.list
@@ -31,8 +32,8 @@ sequenceDiagram
         IC->>IC: 写缓存（失败仅告警，不阻断）
         IC-->>MC: 索引数组
     end
-    MC->>LOC: 扫描 public/plugins/ 取本地版本
-    LOC-->>MC: 6 个存量插件 + 已装市场插件
+    MC->>LOC: 合并扫描 public/plugins/（必备只读）+ data/market-plugins/（市场）
+    LOC-->>MC: 必备基线 + 市场副本（同名 market 优先，带 source 标记）
     loop 每个索引条目
         MC->>VH: compare(local.version, remote.version)
         VH-->>MC: -1 / 0 / 1
@@ -56,14 +57,14 @@ sequenceDiagram
     participant ZI as ZipInspector
     participant PI as PluginInstaller
     participant GH as api.github.com
-    participant FS as public/plugins/
+    participant FS as data/market-plugins/（唯一写目标）
 
     U->>UI: 点「安装」
     UI->>API: POST action=plugin.market.install {id}
     API->>API: 校验 id 正则 + POST 方法
     API->>MC: install(id, version)
     MC->>IC: 取目标条目（含 package.url/sha256/size）
-    MC->>MC: 检查本地是否已装 → 已装则 409
+    MC->>MC: 检查 data 区是否已有同 id 副本 → 有则走升级/409；public 必备区同名不阻断（A.1.4）
     MC->>PF: downloadToTemp(url, token, sha256, size)
     PF->>GH: GET /repos/.../releases/assets/{asset_id}
     Note over PF,GH: Accept: application/octet-stream<br/>curl 跟随 302 到 CDN，CA 用 lib/cacert.pem
@@ -79,16 +80,16 @@ sequenceDiagram
         MC-->>API: 失败
         API-->>UI: bg_fail(422, '插件包校验失败：...')
     else 校验通过
-        ZI->>FS: extract 到 .tmp-<id>-<rand>/
+        ZI->>FS: extract 到 data/market-plugins/.tmp-<id>-<rand>/
         ZI->>ZI: 二次校验 bg_plugin_manifest()
-        MC->>PI: install: rename(.tmp-*, plugins/<id>)
+        MC->>PI: install: rename(.tmp-*, market-plugins/<id>)（绝不写 public/）
         PI->>FS: 原子改名（同目录，瞬时完成）
         alt 改名失败
             PI->>FS: 删除 .tmp-*，保留原状
             PI-->>MC: 500
         else 成功
             PI->>PF: 删除临时 zip
-            PI->>PI: 不写 data/plugins.json（依赖 defaultEnabled）
+            PI->>PI: 不写 data/plugins.json、不写 public/plugins/（依赖 defaultEnabled）
             PI-->>MC: 新插件 Manifest
             MC-->>API: {ok, id, version, plugin}
             API-->>UI: bg_json(200, ...)
@@ -107,7 +108,7 @@ sequenceDiagram
     participant PF as PackageFetcher
     participant ZI as ZipInspector
     participant PI as PluginInstaller
-    participant FS as public/plugins/
+    participant FS as data/market-plugins/（唯一写目标）
     participant ST as data/plugins.json（只读）
 
     U->>UI: 详情页点「升级」
@@ -120,17 +121,18 @@ sequenceDiagram
         VH-->>MC: 否
         MC-->>API: 409 已是最新/目标版本更低
     else 满足
-        MC->>PF: 下载并校验新包（同安装流程）
+        MC->>PF: 下载并校验新包（同安装流程 A.4.2）
         PF-->>MC: 临时 zip
-        MC->>ZI: validate + extract 到 .tmp-<id>-<rand>/
+        MC->>ZI: validate + extract 到 data/market-plugins/.tmp-<id>-<rand>/
         ZI-->>MC: 校验通过
         MC->>PI: upgrade(id, to)
         PI->>ST: 读取旧配置快照（仅读，用于返回提示）
         ST-->>PI: {enabled, settings{apiKey...}}
-        PI->>FS: rename(plugins/<id> → .bak-<id>-<old>-<ts>)
-        PI->>FS: rename(.tmp-<id>-<rand> → plugins/<id>)
+        Note over PI,FS: 即使 id 属于必备插件，也只在 data 侧生成/替换副本
+        PI->>FS: rename(market-plugins/<id> → .bak-<id>-<old>-<ts>)（旧副本存在时）
+        PI->>FS: rename(.tmp-<id>-<rand> → market-plugins/<id>)
         alt 任一步失败
-            PI->>FS: 把 .bak-* rename 回 plugins/<id>
+            PI->>FS: 把 .bak-* rename 回 market-plugins/<id>
             PI->>FS: 清理 .tmp-*
             PI-->>MC: 500 已回滚
         else 成功
@@ -143,7 +145,7 @@ sequenceDiagram
         end
     end
 
-%% ===== A.4.4 卸载插件 =====
+%% ===== A.4.4 卸载插件（仅删 data 市场副本，必备插件受保护） =====
 sequenceDiagram
     autonumber
     actor U as 手机端用户
@@ -151,24 +153,34 @@ sequenceDiagram
     participant API as api.php
     participant MC as MarketController
     participant PI as PluginInstaller
-    participant FS as public/plugins/
+    participant FS as data/market-plugins/（仅删此区）
     participant ST as data/plugins.json（不动）
+    participant SC as PluginScanner（合并扫描）
 
     U->>UI: 详情页点「卸载」
-    UI->>UI: 二次确认：输入/勾选确认，提示不删除 data/ 数据
+    UI->>UI: 二次确认：仅删市场副本，不动 data/ 业务数据与 public/ 必备插件
     U->>UI: 确认
     UI->>API: POST action=plugin.market.uninstall {id, confirm:true}
     API->>API: 校验 id + confirm===true + POST
     API->>MC: uninstall(id)
     MC->>PI: uninstall(id)
-    PI->>PI: assertSafePath(pluginsDir + '/' + id) — 拒绝越界与 data/ 路径
-    PI->>FS: rename(plugins/<id> → .trash/<id>-<ts>)
-    alt 移入失败
-        PI-->>MC: 500
-    else 成功
-        PI->>PI: 延迟删除 .trash（或下次进入市场时清理）
-        PI->>ST: 不写、不删任何键（残留项被 bg_plugin_all 忽略）
-        Note over PI,ST: 如用户要求彻底清理密钥，提供独立显式操作<br/>仅删该 id 子键，不动其它插件（P1）
-        PI-->>MC: ok
-        MC-->>API: bg_json(200, {ok:true, id})
-        API-->>UI: 提示已卸载 → 列表状态变 installable
+    PI->>PI: assertSafePath(marketPluginsDir + '/' + id)<br/>必须位于 data/market-plugins/ 内；拒绝越界 / 指向 public 或 data 其它路径
+    alt data 无副本且 public 有必备基线（纯必备插件）
+        PI-->>MC: 409 系统必备插件不可卸载
+        MC-->>API: bg_fail(409, '系统必备插件不可通过市场卸载')
+        API-->>UI: 提示不可卸载，public/ 未做任何改动
+    else 存在市场副本
+        PI->>FS: rename(market-plugins/<id> → .trash/<id>-<ts>)
+        alt 移入失败
+            PI-->>MC: 500
+        else 成功
+            PI->>SC: 重新合并扫描判定是否回落必备基线
+            SC-->>PI: fallbackToBuiltin = true / false
+            PI->>PI: 延迟删除 .trash（或下次进入市场时清理）
+            PI->>ST: 不写、不删任何键（残留项被合并扫描忽略）
+            Note over PI,ST: 如用户要求彻底清理密钥，提供独立显式操作<br/>仅删该 id 子键，不动其它插件（P1）
+            PI-->>MC: ok + fallbackToBuiltin
+            MC-->>API: bg_json(200, {ok:true, id, fallbackToBuiltin})
+            API-->>UI: 提示已卸载 → 状态变 installable 或回落 builtin
+        end
+    end
