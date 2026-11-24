@@ -1,0 +1,111 @@
+%% 报工系统 · 插件市场 —— 类图
+%% 来源：docs/插件市场-架构设计.md §A.3.1（v1.1 增量修订：双目录策略）
+%% v1.1 变更：builtinPluginsDir = public/plugins（必备只读，随 web 包覆盖，不排除）；marketPluginsDir = data/market-plugins（市场唯一写根，App 热更天然零覆盖）
+%% v1.1 变更：PluginInstaller 拆出双目录常量；新增 PluginScanner（合并扫描、同名 market 优先）；LocalPlugin.source 标记 builtin/market
+classDiagram
+    class SourceConfig {
+        -string file
+        +load() array
+        +save(cfg array) bool
+        +maskToken(cfg array) array
+        +assertHttps(url string) bool
+    }
+    class IndexClient {
+        -SourceConfig cfg
+        -string cacheFile
+        -int ttl
+        +fetch(force bool) array
+        +parseGithubContents(body string) array
+        +cached() array
+        +invalidate() void
+    }
+    class VersionUtil {
+        +normalize(v string) string
+        +compare(a string, b string) int
+        +isUpgrade(local string, remote string) bool
+    }
+    class PackageFetcher {
+        -int maxBytes
+        -int timeout
+        +downloadToTemp(url string, token string, sha256 string) string
+        +verifySha256(file string, expect string) bool
+    }
+    class ZipInspector {
+        +probe() string
+        +validate(zipPath string, expectId string) array
+        +extract(zipPath string, destDir string) bool
+        +rejectSlip(entryName string) bool
+    }
+    class PluginInstaller {
+        -string builtinPluginsDir
+        -string marketPluginsDir
+        +install(id string, ver string) array
+        +upgrade(id string, ver string) array
+        +uninstall(id string) bool
+        +rollback(id string) bool
+        +assertSafePath(path string) bool
+    }
+    class PluginScanner {
+        -string builtinDir
+        -string marketDir
+        +scanAll() LocalPlugin[]
+        +mergeById(builtin LocalPlugin[], market LocalPlugin[]) LocalPlugin[]
+    }
+    class MarketController {
+        +sourceGet() array
+        +sourceSave(body array) array
+        +list(force bool) array
+        +detail(id string) array
+        +install(id string, ver string) array
+        +upgrade(id string, ver string) array
+        +uninstall(id string, confirm bool) array
+        +capabilities() array
+    }
+    class PluginIndex {
+        +string schema
+        +string generatedAt
+        +array source
+        +IndexEntry[] plugins
+    }
+    class IndexEntry {
+        +string id
+        +string name
+        +string version
+        +string description
+        +string author
+        +string[] capabilities
+        +string changelog
+        +string minSystemVersion
+        +PackageInfo package
+    }
+    class PackageInfo {
+        +string name
+        +string url
+        +string browserUrl
+        +string sha256
+        +int size
+    }
+    class LocalPlugin {
+        +string id
+        +string version
+        +string dir
+        +string source
+        +bool enabled
+        +array settings
+    }
+
+    MarketController --> SourceConfig : 读写来源配置
+    MarketController --> IndexClient : 拉取索引
+    MarketController --> PluginScanner : 合并扫描（带来源标记）
+    MarketController --> PluginInstaller : 执行安装/升级/卸载
+    MarketController --> VersionUtil : 判定状态
+    IndexClient --> SourceConfig : 取 URL 与令牌
+    IndexClient --> PluginIndex : 解析为
+    PluginScanner --> LocalPlugin : 产出(builtin/market)
+    PluginInstaller --> PackageFetcher : 下载 zip
+    PluginInstaller --> ZipInspector : 校验并解压
+    PluginInstaller --> LocalPlugin : 仅替换 market 副本
+    PluginInstaller --> VersionUtil : 版本校验
+    PluginIndex "1" *-- "n" IndexEntry
+    IndexEntry "1" *-- "1" PackageInfo
+    LocalPlugin ..> IndexEntry : 按 id 合并比对
