@@ -2,6 +2,7 @@ name: Plugin Release
 
 # 插件发布流水线（设计依据：docs/打包工作流文档.md v1.1 §4）
 # 触发：推送 plugin-<id>-vX.Y.Z tag；web-v* 系统热更 tag 不会触发。
+# 备用：支持手动触发（workflow_dispatch，填 id/version），用于 tag 事件未触发时补发，产物与 tag 触发一致。
 # 流程：校验 tag/祖先链/清单 → 打包 zip + sha256 → 建 Release 上传 → 取 asset id → upsert plugins-index.json → 提交回 plugin 分支。
 # 双目录策略：打包源是 public/plugins/<id>/（必备基线，只读）；市场安装落盘 data/market-plugins/（本流水线不涉及）。
 
@@ -9,6 +10,14 @@ on:
   push:
     tags:
       - 'plugin-*-v*.*.*'
+  workflow_dispatch:
+    inputs:
+      id:
+        description: '插件 id（public/plugins 下的目录名）'
+        required: true
+      version:
+        description: '插件版本 X.Y.Z（须与 plugin.json 一致）'
+        required: true
 
 permissions:
   contents: write   # 建 Release + 上传资产 + 推送索引提交
@@ -21,27 +30,33 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      # 默认检出 $GITHUB_SHA（tag 指向的提交），不指定 ref；fetch-depth:0 供祖先链校验。
-      - name: 检出 tag 提交（含完整历史）
+      # tag 触发时检出 tag 提交；手动触发时检出 plugin 分支（市场插件源）。
+      - name: 检出代码（含完整历史）
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && 'plugin' || github.ref }}
 
       - name: ① 校验 tag 格式并解析 id/version
         id: meta
         run: |
           set -e
           TAG="${GITHUB_REF_NAME}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="plugin-${{ inputs.id }}-v${{ inputs.version }}"
+          fi
           echo "tag=$TAG"
           [[ "$TAG" =~ ^plugin-([a-z0-9][a-z0-9-]{0,31})-v([0-9]+\.[0-9]+\.[0-9]+)$ ]] \
             || { echo "tag 格式非法，应为 plugin-<id>-vX.Y.Z"; exit 1; }
           ID="${BASH_REMATCH[1]}"
           VER="${BASH_REMATCH[2]}"
           echo "id=$ID"; echo "version=$VER"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "id=$ID" >> "$GITHUB_OUTPUT"
           echo "version=$VER" >> "$GITHUB_OUTPUT"
 
       - name: ② 祖先链校验（tag 提交必须在 origin/plugin 上）
+        if: github.event_name != 'workflow_dispatch'
         run: |
           set -e
           git fetch origin plugin
@@ -114,7 +129,7 @@ jobs:
       - name: ⑥ 建 Release 上传 zip
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ steps.meta.outputs.tag }}
           name: "插件 ${{ steps.meta.outputs.id }} v${{ steps.meta.outputs.version }}"
           files: ${{ steps.pkg.outputs.zip }}
           body: "插件包由 CI 自动生成，索引已同步更新。"
@@ -125,7 +140,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
-          TAG="${GITHUB_REF_NAME}"
+          TAG="${{ steps.meta.outputs.tag }}"
           ZIP="${{ steps.pkg.outputs.zip }}"
           AID=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" \
                  --jq ".assets[] | select(.name==\"${ZIP}\") | .id")
@@ -140,7 +155,7 @@ jobs:
           AID: ${{ steps.asset.outputs.id }}
           SHA: ${{ steps.pkg.outputs.sha }}
           SIZE: ${{ steps.pkg.outputs.size }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ steps.meta.outputs.tag }}
         run: |
           set -e
           ZIP="plugin-${ID}-v${VER}.zip"
@@ -183,7 +198,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add plugins-index.json
           git diff --staged --quiet && { echo "索引无变化"; exit 0; }
-          git commit -m "chore: 更新插件索引（${{ github.ref_name }}）"
+          git commit -m "chore: 更新插件索引（${{ steps.meta.outputs.tag }}）"
           # plugin 分支可能在 tag 之后有新提交，先 rebase 再推送；失败重试一次
           for attempt in 1 2 3; do
             git fetch origin plugin
