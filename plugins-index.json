@@ -1,6 +1,6 @@
 {
   "schema": "baogong-plugin-index/1",
-  "generatedAt": "2026-11-24T13:15:03Z",
+  "generatedAt": "2026-11-24T13:15:44Z",
   "source": {
     "repo": "c1as/baogong-system",
     "branch": "plugin",
@@ -438,6 +438,127 @@
         "url": "https://api.github.com/repos/c1as/baogong-system/releases/assets/787271578",
         "sha256": "4928ed28e10ffe7423498021487784eb379e37ba5640166b8aed434d30585202",
         "size": 14133
+      }
+    },
+    {
+      "name": "小米 MiMo V2.6 Flash",
+      "version": "1.0.0",
+      "description": "调用小米 MiMo 开放平台 mimo-v2.6-flash 视觉模型识别报工单照片，自动提取报工日期、报工人、车间与零件明细，并优先对齐零件库中的图号、名称和工序。",
+      "author": "报工系统",
+      "capabilities": [
+        "report.ocr"
+      ],
+      "entry": "handler.php",
+      "check": "check.php",
+      "settings": [
+        {
+          "key": "apiKey",
+          "label": "API Key",
+          "type": "password",
+          "placeholder": "sk- 开头（按量付费）或 tp-/ttp- 开头（Token Plan）",
+          "hint": "platform.xiaomimimo.com「API Keys」获取；仅存服务器 data/plugins.json，不回显"
+        },
+        {
+          "key": "endpoint",
+          "label": "接口地址",
+          "type": "text",
+          "default": "https://api.xiaomimimo.com/v1/chat/completions",
+          "placeholder": "https://api.xiaomimimo.com/v1/chat/completions",
+          "hint": "按量付费默认如上；Token Plan 用 https://token-plan-cn.xiaomimimo.com/v1/chat/completions"
+        },
+        {
+          "key": "model",
+          "label": "模型名",
+          "type": "text",
+          "default": "mimo-v2.6-flash",
+          "placeholder": "mimo-v2.6-flash",
+          "hint": "可换 mimo-v2.6-pro；需与 API Key 类型、接口地址匹配"
+        },
+        {
+          "key": "thinking",
+          "label": "思考模式",
+          "type": "select",
+          "default": "disabled",
+          "options": [
+            {
+              "value": "disabled",
+              "label": "关闭（更快更省）"
+            },
+            {
+              "value": "enabled",
+              "label": "开启（更准但更慢）"
+            }
+          ],
+          "hint": "开启后先推理再作答，耗时与 token 消耗上升，需配合更大的最大输出 Token"
+        },
+        {
+          "key": "maxTokens",
+          "label": "最大输出 Token",
+          "type": "number",
+          "default": "8192",
+          "min": 256,
+          "max": 131072,
+          "step": 256,
+          "placeholder": "8192",
+          "hint": "平台上限 131072，已含思考 token；明细多或开思考时调大"
+        },
+        {
+          "key": "timeout",
+          "label": "超时(秒)",
+          "type": "number",
+          "default": "45",
+          "min": 10,
+          "max": 180,
+          "step": 5,
+          "placeholder": "45",
+          "hint": "拍照到出结果的等待上限，网络慢可调到 60~90"
+        },
+        {
+          "key": "retries",
+          "label": "自动重试次数",
+          "type": "number",
+          "default": "1",
+          "min": 0,
+          "max": 2,
+          "step": 1,
+          "placeholder": "1",
+          "hint": "超时、断连、429 限流、5xx 时退避重试的次数（0~2）"
+        },
+        {
+          "key": "catalogLimit",
+          "label": "零件库注入条数",
+          "type": "number",
+          "default": "200",
+          "min": 0,
+          "max": 300,
+          "step": 10,
+          "placeholder": "200",
+          "hint": "0~300；给模型比对的零件库条数上限，调大可提升匹配、略增耗时"
+        },
+        {
+          "key": "prompt",
+          "label": "识别指令",
+          "type": "textarea",
+          "rows": 12,
+          "default": "你是工厂车间的「报工单」识别引擎，请识别图片中的报工单/生产流转单，只输出一个 JSON 对象，不要解释、不要 markdown 代码块。\n\n输出结构：\n{\"date\":\"YYYY-MM-DD\",\"worker\":\"报工人\",\"workshop\":\"车间\",\"note\":\"备注\",\"confidence\":0.9,\"items\":[{\"partNo\":\"图号\",\"partName\":\"零件名称\",\"process\":\"工序\",\"qty\":12,\"price\":null}]}\n\n识别规则：\n1. date：取报工日期/填单日期，必须补全成 YYYY-MM-DD；只写月日时按当前年份补全年份；识别不到填空字符串。\n2. worker / workshop / note：分别取报工人（或签名、班组长）、车间（或工段、班组）、备注，没有则填空字符串。\n3. items：每行一条报工明细，最多 20 行；表头行、合计行、小计行、签名行不算明细。\n4. partNo / partName / process 必须优先采用下方「零件库」中完全一致的写法；零件库里没有的，照单据原文填写，不得改写、缩写或编造。\n5. process 只能是工序名（如车、铣、钻、磨、钳、热处理、电镀、装配），无法判断填空字符串。\n6. qty：本行报工数量，纯数字，单位不要写进去；看不清或无法确认填 null，不要猜。\n7. price：该件单价，纯数字；单据没有价格填 null。\n8. confidence：0~1 之间，表示整单识别的把握程度。\n9. 模糊、遮挡、无法辨认的单字用英文问号 ? 代替；宁可留空也不要编造内容。\n\n当前日期：{TODAY}\n零件库（图号 | 零件名称 | 可选工序）：\n{CATALOG}",
+          "hint": "可改；{TODAY} 替换为当天日期，{CATALOG} 替换为零件库清单，JSON 字段名不要改"
+        },
+        {
+          "key": "skipTls",
+          "label": "跳过证书校验",
+          "type": "checkbox",
+          "default": "",
+          "hint": "仅本机自签代理调试用，生产环境请勿勾选"
+        }
+      ],
+      "id": "mimo-v26-flash",
+      "tag": "plugin-mimo-v26-flash-v1.0.0",
+      "releasedAt": "2026-11-24T13:15:44Z",
+      "package": {
+        "name": "plugin-mimo-v26-flash-v1.0.0.zip",
+        "url": "https://api.github.com/repos/c1as/baogong-system/releases/assets/787273898",
+        "sha256": "4524aa6a19c63bc771cd45ad9b6a31b10c19d1c5b8b0142c11ab35b2e4799634",
+        "size": 21663
       }
     }
   ]
