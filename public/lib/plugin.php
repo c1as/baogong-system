@@ -277,6 +277,7 @@ function bg_plugin_public($m)
         'version' => $m['version'],
         'description' => $m['description'],
         'author' => $m['author'],
+        'source' => isset($m['source']) ? $m['source'] : 'builtin',
         'capabilities' => $m['capabilities'],
         'enabled' => bg_plugin_is_enabled($m['id']),
         'hasCheck' => $m['check'] !== '',

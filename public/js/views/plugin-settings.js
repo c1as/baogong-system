@@ -60,6 +60,10 @@ function pluginFieldHtml(f) {
   }</div>`;
 }
 
+/* 折叠状态：默认全部收起，仅存于当前页面会话（刷新恢复收起）。
+   任意插件（含以后新增的）都按 data-plugin 通用处理，无需插件自身配合。 */
+const pluginOpenIds = new Set();
+
 function pluginCardHtml(p) {
   const caps = p.capabilities || [];
   const isOcr = caps.includes('report.ocr');
@@ -67,10 +71,11 @@ function pluginCardHtml(p) {
   const adminField = (p.settings || []).find((f) => f.key === 'adminUrl');
   const adminHref = adminField && adminField.value ? String(adminField.value) : '/plugins/handwriting-lexicon/admin.php';
   const checkLabel = caps.includes('report.ocr.log') ? '查看日志' : 'API 链接测试';
-  return `<div class="plugin-card" data-plugin="${esc(p.id)}">
-    <div class="plugin-head">
+  const open = pluginOpenIds.has(p.id);
+  return `<div class="plugin-card ${open ? 'open' : ''}" data-plugin="${esc(p.id)}">
+    <div class="plugin-head" data-plugin-fold="${esc(p.id)}" title="${open ? '点击收起' : '点击展开配置'}">
       <div class="plugin-title">
-        <div class="plugin-name">${esc(p.name)}<span class="plugin-ver">v${esc(p.version)}</span></div>
+        <div class="plugin-name">${esc(p.name)}<span class="plugin-ver">v${esc(p.version)}</span><span class="plugin-chevron" aria-hidden="true"></span></div>
         <p class="plugin-desc">${esc(p.description || '未提供说明')}</p>
       </div>
       <label class="switch" title="${p.enabled ? '点击停用' : '点击启用'}">
@@ -78,13 +83,15 @@ function pluginCardHtml(p) {
         <span class="switch-track"></span>
       </label>
     </div>
-    <div class="plugin-tags">
-      ${(p.capabilities || []).map((c) => `<span class="chip">${esc(c)}</span>`).join('')}
-      <span class="plugin-author">${esc(p.author || '未署名')}</span>
-      <span class="plugin-state ${p.enabled ? 'on' : ''}">${p.enabled ? '已启用' : '已停用'}</span>
+    <div class="plugin-body" ${open ? '' : 'hidden'}>
+      <div class="plugin-tags">
+        ${(p.capabilities || []).map((c) => `<span class="chip">${esc(c)}</span>`).join('')}
+        <span class="plugin-author">${esc(p.author || '未署名')}</span>
+        <span class="plugin-state ${p.enabled ? 'on' : ''}">${p.enabled ? '已启用' : '已停用'}</span>
+      </div>
+      <div class="plugin-fields">${(p.settings || []).map(pluginFieldHtml).join('')}</div>
+      <div class="plugin-check-box" hidden></div>
     </div>
-    <div class="plugin-fields">${(p.settings || []).map(pluginFieldHtml).join('')}</div>
-    <div class="plugin-check-box" hidden></div>
     <div class="plugin-actions">
       ${
         isLexicon
@@ -93,9 +100,27 @@ function pluginCardHtml(p) {
       }
       ${p.hasCheck ? `<button type="button" class="btn btn-ghost" data-plugin-check="${esc(p.id)}">${checkLabel}</button>` : ''}
       ${isOcr ? `<button type="button" class="btn btn-ghost" data-plugin-test="${esc(p.id)}">测试识别</button>` : ''}
+      ${
+        p.source === 'market'
+          ? `<button type="button" class="btn btn-ghost plugin-del" data-plugin-uninstall="${esc(p.id)}">卸载插件</button>`
+          : ''
+      }
       <button type="button" class="btn btn-primary" data-plugin-save="${esc(p.id)}">保存设置</button>
     </div>
   </div>`;
+}
+
+function togglePluginCard(id, force) {
+  const card = document.querySelector('.plugin-card[data-plugin="' + id + '"]');
+  if (!card) return;
+  const open = force === undefined ? !pluginOpenIds.has(id) : !!force;
+  if (open) pluginOpenIds.add(id);
+  else pluginOpenIds.delete(id);
+  card.classList.toggle('open', open);
+  const body = card.querySelector('.plugin-body');
+  if (body) body.hidden = !open;
+  const head = card.querySelector('[data-plugin-fold]');
+  if (head) head.title = open ? '点击收起' : '点击展开配置';
 }
 
 function netCardHtml() {
@@ -110,7 +135,7 @@ function netCardHtml() {
       <button type="button" class="btn btn-ghost" data-net-test>开始测试</button>
       <span class="net-sum" id="netSum"></span>
     </div>
-    <div class="net-result" id="netResult" hidden></div>
+    <div class="net-result" id="netResult"><div class="net-empty">测试结果将显示在这里</div></div>
   </div>`;
 }
 
@@ -207,8 +232,7 @@ function viewSettings() {
     </div>`;
 
   view.innerHTML = `<div class="settings-list" id="settingsList">
-      ${netCardHtml()}
-      ${engineOverviewHtml()}
+      <div class="plugin-top-grid">${netCardHtml()}${engineOverviewHtml()}</div>
       ${state.plugins.map(pluginCardHtml).join('') || emptyHint}
     </div>
     <p class="settings-note">插件目录 <code>public/plugins/&lt;id&gt;/</code> · 配置保存在 <code>data/plugins.json</code>。识别出的日期、零件、工序、数量会自动填入报工单，保存前请人工核对。</p>`;
@@ -224,6 +248,41 @@ function viewSettings() {
   });
 
   $('#settingsList').addEventListener('click', async (e) => {
+    // 折叠：点标题区展开/收起，点开关不触发
+    const foldHead = e.target.closest('[data-plugin-fold]');
+    if (foldHead && !e.target.closest('.switch')) {
+      togglePluginCard(foldHead.dataset.pluginFold);
+      return;
+    }
+
+    const delBtn = e.target.closest('[data-plugin-uninstall]');
+    if (delBtn) {
+      const id = delBtn.dataset.pluginUninstall;
+      const p = state.plugins.find((x) => x.id === id);
+      const ok = await confirmDialog({
+        title: '确认卸载插件',
+        message: `确定要卸载「${p ? p.name : id}」吗？若为系统必备插件的市场副本，卸载后将回落到系统基线。`,
+        okText: '确认卸载',
+        danger: true,
+      });
+      if (!ok) return;
+      delBtn.disabled = true;
+      delBtn.textContent = '卸载中…';
+      try {
+        await api('POST', 'api.php?action=plugin.market.uninstall', { id, confirm: true });
+        pluginOpenIds.delete(id);
+        await refreshPlugins();
+        refreshMarketBadge();
+        viewSettings();
+        toast('插件已卸载', 'ok');
+      } catch (err) {
+        if (err.status !== 401) toast('卸载失败：' + err.message, 'err');
+        delBtn.disabled = false;
+        delBtn.textContent = '卸载插件';
+      }
+      return;
+    }
+
     const netBtn = e.target.closest('[data-net-test]');
     if (netBtn) {
       const old = netBtn.textContent;
@@ -272,6 +331,7 @@ function viewSettings() {
             res.message || (res.ok ? '接口连接正常' : '接口测试未通过')
           )}</div>${rows}`;
           box.hidden = false;
+          togglePluginCard(id, true);
         }
         toast(res.ok ? 'API 链接测试通过' : res.message || 'API 链接测试未通过', res.ok ? 'ok' : 'err');
       } catch (err) {

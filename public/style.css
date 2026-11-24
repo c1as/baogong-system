@@ -3224,9 +3224,26 @@ svg {
 }
 
 .net-result {
+  flex: none;
+  height: 180px;
+  overflow: auto;
   margin-top: 14px;
   padding-top: 10px;
   border-top: 1px solid var(--line-2);
+}
+
+.net-empty {
+  font-size: 12.5px;
+  color: var(--faint);
+}
+
+.net-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.net-card .plugin-head {
+  flex: none;
 }
 
 .net-card .plugin-actions {
@@ -3751,3 +3768,55 @@ body.pdf-open {
   .mk-source { flex-direction: column; align-items: flex-start; }
   .mk-detail-grid { grid-template-columns: 1fr; }
 }
+
+/* ---- 插件设置页 v3.2：顶部两卡并排 + 插件卡片折叠 ---- */
+.plugin-top-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  align-items: stretch;
+}
+
+.plugin-head[data-plugin-fold] {
+  cursor: pointer;
+  user-select: none;
+}
+
+.plugin-chevron {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin-left: 2px;
+  border-right: 1.5px solid var(--faint);
+  border-bottom: 1.5px solid var(--faint);
+  transform: rotate(45deg) translateY(-2px);
+  transition: transform 0.18s;
+}
+
+.plugin-card.open .plugin-chevron {
+  transform: rotate(-135deg) translateY(-2px);
+}
+
+.plugin-body[hidden] {
+  display: none;
+}
+
+.plugin-del {
+  color: #dc2626;
+}
+
+.plugin-del:hover {
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+@media (max-width: 900px) {
+  .plugin-top-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .net-result {
+    height: 140px;
+  }
+}
+

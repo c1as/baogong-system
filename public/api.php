@@ -18,7 +18,7 @@ $BG_THROW = false;
 if (!function_exists('bg_app_version')) {
     function bg_app_version()
     {
-        return '3.1.0';
+        return '3.2.0';
     }
 }
 
