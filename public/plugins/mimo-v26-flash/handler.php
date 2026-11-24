@@ -12,6 +12,13 @@ if (!isset($GLOBALS['BG_PLUGIN_CTX']) || !is_array($GLOBALS['BG_PLUGIN_CTX'])) {
 
 require __DIR__ . '/shared.php';
 
+/* 手写字词库连接层（唯一入口）：一行引入 + 一行初始化，失败静默降级为未命中 */
+$bglxBridgeFile = dirname(__DIR__) . '/handwriting-lexicon/lib/bridge.php';
+if (is_file($bglxBridgeFile)) {
+    require_once $bglxBridgeFile;
+    bglx_bridge_init('mimo-v26-flash');
+}
+
 $ctx = $GLOBALS['BG_PLUGIN_CTX'];
 $catalog = is_array($ctx['catalog']) ? $ctx['catalog'] : array();
 $cfg = is_array($ctx['config']) ? $ctx['config'] : array();
@@ -292,6 +299,17 @@ if (is_array($data)) {
         $warnings[] = $parseNote;
     }
     $confidence = 0.3;
+}
+
+/* 字库连接层：normal data 与 fallback 两条分支共用同一处批量归一 */
+if (function_exists('bglx_bridge_norm_fields')) {
+    $bglxNorm = bglx_bridge_norm_fields($fields, array('plugin' => 'mimo-v26-flash'));
+    if (isset($bglxNorm['fields']) && is_array($bglxNorm['fields'])) {
+        $fields = $bglxNorm['fields'];
+    }
+    foreach (bglx_bridge_suggestions() as $sug) {
+        $warnings[] = '字库建议：' . $sug . '，请人工确认';
+    }
 }
 
 // 去重、限长：最多 5 条告警，每条不超过 80 字

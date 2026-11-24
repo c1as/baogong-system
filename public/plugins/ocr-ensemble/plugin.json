@@ -1,8 +1,8 @@
 {
   "id": "ocr-ensemble",
   "name": "多 OCR 融合引擎",
-  "version": "1.0.0",
-  "description": "不直接访问外网：并行调度多个已启用的识别插件，按字段投票、置信度加权与一致性系数融合结果，输出综合置信度和分歧告警，建议人工复核低置信单据。",
+  "version": "2.0.0",
+  "description": "不直接访问外网：并行调度多个已启用的识别插件，按 L0-L6 分层裁决（原文佐证→字库硬归一→字段级信誉加权→2/3/N 路冲突消解→置信度校准→弃权/复核）融合结果，输出综合置信度、命中规则与可追溯链路。",
   "author": "报工系统",
   "capabilities": ["report.ocr", "report.ocr.fusion"],
   "defaultEnabled": false,
@@ -37,7 +37,93 @@
       "max": 1,
       "step": 0.05,
       "placeholder": "0.6",
-      "hint": "综合置信度低于该值时自动提示人工复核；关键单据建议 0.7"
+      "hint": "综合置信度低于该值时提示人工复核"
+    },
+    {
+      "key": "reviewThreshold",
+      "label": "复核阈值（标量）",
+      "type": "number",
+      "default": "0.6",
+      "min": 0,
+      "max": 1,
+      "step": 0.05,
+      "hint": "校准置信度低于此值仍给值但提示复核；明细行可在本设置下方 fieldThresholds 按字段覆盖"
+    },
+    {
+      "key": "enableFieldReputation",
+      "label": "启用字段级信誉动态权重",
+      "type": "checkbox",
+      "default": "1",
+      "hint": "按（引擎,字段）历史表现动态调整投票权重；关闭则回退到引擎自报置信度（基线行为）"
+    },
+    {
+      "key": "enableCalibration",
+      "label": "启用置信度校准",
+      "type": "checkbox",
+      "default": "",
+      "hint": "默认关闭；需先用 tools/fit-calibration.php 基于黄金样本拟合 calibration.json 且 ECE 不劣化后再开启"
+    },
+    {
+      "key": "trustedShare",
+      "label": "可信占比阈值",
+      "type": "number",
+      "default": "0.6",
+      "min": 0.5,
+      "max": 1,
+      "step": 0.05,
+      "hint": "最大簇权重占比达到此值即快速采纳，否则进入 2/3/N 路分歧裁决"
+    },
+    {
+      "key": "repDelta",
+      "label": "信誉差裁决阈值",
+      "type": "number",
+      "default": "0.05",
+      "min": 0.01,
+      "max": 0.3,
+      "step": 0.01,
+      "hint": "两路信誉差小于此值判为不可裁决转复核，不再简单二选一"
+    },
+    {
+      "key": "traceLevel",
+      "label": "裁决链路记录级别",
+      "type": "select",
+      "default": "full",
+      "options": [
+        { "value": "full", "label": "完整（推荐，全字段 L0-L6 链路）" },
+        { "value": "brief", "label": "精简（仅关键字段）" },
+        { "value": "off", "label": "关闭（不写 trace）" }
+      ],
+      "hint": "旁路写入 data/ocr-logs/fusion-trace-YYYY-MM-DD.jsonl，用 invokeId 关联主日志；不进返回结构"
+    },
+    {
+      "key": "singleEngineMode",
+      "label": "单引擎直出模式",
+      "type": "checkbox",
+      "default": "",
+      "hint": "开启后跳过 L0-L6，直接返回第一路可用引擎结果；仅用于对比与极端降级，日常请关闭"
+    },
+    {
+      "key": "fieldThresholds",
+      "label": "明细字段复核阈值（JSON）",
+      "type": "textarea",
+      "rows": 3,
+      "default": "{\"partNo\":0.7,\"partName\":0.6,\"process\":0.6,\"qty\":0.7,\"price\":0.65}",
+      "hint": "按字段差异化复核阈值；图号/数量错误代价高默认 0.7，工序/名称 0.6，单价 0.65；留空用默认值"
+    },
+    {
+      "key": "preferredEngine",
+      "label": "图号首选引擎（tie-break）",
+      "type": "text",
+      "default": "",
+      "hint": "仅当图号字段权重完全相同时作为平局决胜引擎 id；不影响「佐证>字库>信誉>投票」层级顺序"
+    },
+    {
+      "key": "strengths",
+      "label": "引擎能力标签（JSON）",
+      "type": "textarea",
+      "rows": 3,
+      "default": "",
+      "hint": "信誉冷启动先验：如 {\"baidu-ocr\":[\"partNo\",\"qty\"]} 表示该引擎擅长图号/数量，命中字段 prior+0.2；可选"
     }
   ]
 }

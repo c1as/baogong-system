@@ -26,6 +26,13 @@ if (!isset($GLOBALS['BG_PLUGIN_CTX']) || !is_array($GLOBALS['BG_PLUGIN_CTX'])) {
     exit;
 }
 
+/* 手写字词库连接层（最小接入示例）：一行引入 + 一行初始化，失败静默降级 */
+$bglxBridgeFile = dirname(__DIR__) . '/handwriting-lexicon/lib/bridge.php';
+if (is_file($bglxBridgeFile)) {
+    require_once $bglxBridgeFile;
+    bglx_bridge_init('mock-ocr');
+}
+
 $ctx = $GLOBALS['BG_PLUGIN_CTX'];
 $cfg = isset($ctx['config']) && is_array($ctx['config']) ? $ctx['config'] : array();
 $catalog = isset($ctx['catalog']) && is_array($ctx['catalog']) ? $ctx['catalog'] : array();
@@ -79,6 +86,19 @@ if (!$catalog) {
             'process' => $proc,
             'qty' => $qty,
         );
+    }
+}
+
+/* 字库连接层：批量归一明细字段，suggest 并入告警（最小接入示例） */
+if (function_exists('bglx_bridge_norm_fields')) {
+    $bglxNorm = bglx_bridge_norm_fields(array('items' => $items), array('plugin' => 'mock-ocr'));
+    if (isset($bglxNorm['fields']['items']) && is_array($bglxNorm['fields']['items'])) {
+        $items = $bglxNorm['fields']['items'];
+    }
+    foreach (bglx_bridge_suggestions() as $sug) {
+        if (count($warnings) < 5) {
+            $warnings[] = '字库建议：' . $sug . '，请人工确认';
+        }
     }
 }
 

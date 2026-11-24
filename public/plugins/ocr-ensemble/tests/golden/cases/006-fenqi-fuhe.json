@@ -1,0 +1,36 @@
+{
+  "image_ref": "gold/形近字-006.jpg",
+  "tags": ["形近字", "图号粘连"],
+  "expect": {
+    "date": "2026-11-19",
+    "worker": "刘洋",
+    "workshop": "三车间",
+    "partNo": "2L59711305",
+    "process": "钳",
+    "qty": 30
+  },
+  "base": {
+    "date": "2026-11-19",
+    "worker": "刘洋",
+    "workshop": "三车间",
+    "partNo": "2L59711305",
+    "process": "钳",
+    "qty": 30
+  },
+  "ocf": {
+    "date": "2026-11-19",
+    "worker": "刘洋",
+    "workshop": "三车间",
+    "partNo": "2L59711305",
+    "process": "钳",
+    "qty": 30,
+    "confidence": 0.58,
+    "decision": "review",
+    "rule": "UNRESOLVABLE_3WAY",
+    "trace": {"L4": {"rule": "UNRESOLVABLE_3WAY", "needReview": true}, "L6": {"decision": "review"}}
+  },
+  "correct": false,
+  "confidence": 0.58,
+  "agreement": 0.45,
+  "note": "三路各异且层级不可裁决，对应低置信转复核分支"
+}

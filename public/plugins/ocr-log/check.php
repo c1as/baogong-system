@@ -1,9 +1,9 @@
 <?php
 /*
- * 识别日志插件 · 自检
+ * 识别日志插件 · 自检脚本
  *
- * 检查日志目录是否可写，并列出今日条数与最近几条记录。
- * 由 api.php?action=plugin.check&id=ocr-log 引入。
+ * 校验日志目录可写、主日志存在，并关联展示 fusion-trace 裁决链路文件，
+ * 按 invokeId 串联「主日志 ↔ 融合 trace」，便于排查每一字段判定依据。
  */
 
 if (!isset($GLOBALS['BG_PLUGIN_CTX']) || !is_array($GLOBALS['BG_PLUGIN_CTX'])) {
@@ -11,75 +11,87 @@ if (!isset($GLOBALS['BG_PLUGIN_CTX']) || !is_array($GLOBALS['BG_PLUGIN_CTX'])) {
     exit;
 }
 
-global $DATA_DIR;
-$dir = ($DATA_DIR !== '' ? $DATA_DIR : dirname(dirname(dirname(__DIR__))) . '/data') . '/ocr-logs';
-$file = $dir . '/' . date('Y-m-d') . '.jsonl';
+$ctx = $GLOBALS['BG_PLUGIN_CTX'];
+$cfg = isset($ctx['config']) && is_array($ctx['config']) ? $ctx['config'] : array();
 
-$writable = true;
-if (!is_dir($dir)) {
-    $writable = @mkdir($dir, 0775, true) || is_dir($dir);
-} else {
-    $writable = is_writable($dir);
+/**
+ * 数据目录（与 ocf/handwriting-lexicon 保持同一解析顺序）。
+ *
+ * @return string
+ */
+function ocrlog_data_dir()
+{
+    if (isset($GLOBALS['DATA_DIR']) && is_string($GLOBALS['DATA_DIR']) && $GLOBALS['DATA_DIR'] !== '') {
+        return rtrim(str_replace('\\', '/', $GLOBALS['DATA_DIR']), '/');
+    }
+    return dirname(__DIR__, 3) . '/data';
 }
 
 $details = array();
+$allOk = true;
+$dataDir = ocrlog_data_dir();
+$logDir = $dataDir . '/ocr-logs';
+
+if (!is_dir($logDir)) {
+    @mkdir($logDir, 0775, true);
+}
+$writable = is_dir($logDir) && is_writable($logDir);
 $details[] = array(
     'label' => '日志目录',
     'ok' => $writable,
-    'detail' => $dir . ($writable ? '（可写）' : '（不可写，请检查 data 目录权限）'),
+    'detail' => $logDir . ($writable ? '（可写）' : '（不可写，请检查权限）'),
+);
+if (!$writable) {
+    $allOk = false;
+}
+
+/* 主日志（当天） */
+$mainLog = $logDir . '/report.ocr.log';
+$mainOk = is_file($mainLog);
+$details[] = array(
+    'label' => '主日志（report.ocr.log）',
+    'ok' => true,
+    'detail' => $mainOk ? '存在（' . @date('Y-m-d H:i', @filemtime($mainLog)) . ' 更新）' : '尚未生成（首次识别后创建）',
 );
 
-$lines = array();
-if (is_file($file)) {
-    $raw = @file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-    if (is_array($raw)) {
-        $lines = $raw;
+/* 融合 trace（当天 JSONL） */
+$traceFile = $logDir . '/fusion-trace-' . date('Y-m-d') . '.jsonl';
+$traceExists = is_file($traceFile);
+$traceCount = 0;
+$traceSample = '';
+if ($traceExists) {
+    $lines = file($traceFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    $traceCount = is_array($lines) ? count($lines) : 0;
+    if ($traceCount > 0) {
+        $last = json_decode($lines[$traceCount - 1], true);
+        if (is_array($last)) {
+            $traceSample = '最近 invokeId：' . (isset($last['invokeId']) ? $last['invokeId'] : '-')
+                . ' · 字段数 ' . count(isset($last['fields']) && is_array($last['fields']) ? $last['fields'] : array());
+        }
     }
 }
-$cnt = count($lines);
 $details[] = array(
-    'label' => '今日记录',
+    'label' => '融合裁决链路（fusion-trace）',
     'ok' => true,
-    'detail' => $writable
-        ? ($cnt . ' 条 · ' . ($cnt ? '最近写入 ' . date('H:i:s', (int)@filemtime($file)) : '暂无记录，识别一次后自动生成'))
-        : '目录不可写，无法记录',
+    'detail' => $traceExists
+        ? ('今日 ' . $traceCount . ' 条记录；' . ($traceSample !== '' ? $traceSample : '可解析'))
+        : '今日暂无 trace（融合引擎开启 traceLevel 后按 invokeId 写入）',
 );
 
-foreach (array_slice($lines, -6) as $ln) {
-    $e = json_decode($ln, true);
-    if (!is_array($e)) {
-        continue;
-    }
-    $time = isset($e['ts']) ? substr((string)$e['ts'], 11) : '';
-    if (isset($e['kind']) && $e['kind'] === 'match') {
-        $hit = isset($e['hit']) && $e['hit'] !== '' ? (string)$e['hit'] : '未匹配';
-        $cands = isset($e['cands']) && is_array($e['cands']) ? implode(' / ', array_slice($e['cands'], 0, 3)) : '';
-        $details[] = array(
-            'label' => $time . ' 零件匹配',
-            'ok' => isset($e['hit']) && $e['hit'] !== '',
-            'detail' => '「' . (isset($e['q']) ? $e['q'] : '') . '」→ ' . $hit
-                . (isset($e['score']) && $e['score'] > 0 ? '（' . $e['score'] . '）' : '')
-                . ($cands !== '' ? ' 候选 ' . $cands : ''),
-        );
-        continue;
-    }
-    $items = isset($e['items']) && is_array($e['items']) ? count($e['items']) : 0;
-    $warn = isset($e['warnings']) && is_array($e['warnings']) && $e['warnings']
-        ? ' ｜ ' . $e['warnings'][0] : '';
-    $details[] = array(
-        'label' => $time . (isset($e['kind']) && $e['kind'] === 'engine' ? ' 子引擎' : ' 识别'),
-        'ok' => true,
-        'detail' => (isset($e['plugin']) ? $e['plugin'] : '')
-            . ' · ' . (isset($e['engine']) ? $e['engine'] : '')
-            . ' · ' . $items . ' 行'
-            . ' · ' . round(((float)(isset($e['conf']) ? $e['conf'] : 0)) * 100) . '%'
-            . ' · ' . (isset($e['ms']) ? (int)$e['ms'] : 0) . 'ms'
-            . $warn,
-    );
+/* keepDays 配置校验 */
+$keepDays = isset($cfg['keepDays']) && is_numeric($cfg['keepDays']) ? (int)$cfg['keepDays'] : 14;
+$keepOk = $keepDays >= 1 && $keepDays <= 180;
+$details[] = array(
+    'label' => '日志保留天数',
+    'ok' => $keepOk,
+    'detail' => $keepOk ? ($keepDays . ' 天（主日志与 fusion-trace 同生命周期）') : '必须是 1~180 之间的整数',
+);
+if (!$keepOk) {
+    $allOk = false;
 }
 
 return array(
-    'ok' => $writable,
-    'message' => $writable ? '日志正常，今日 ' . $cnt . ' 条记录' : '日志目录不可写：' . $dir,
+    'ok' => $allOk,
+    'message' => $allOk ? '日志与裁决链路自检通过' : '配置或权限有误，请查看下方明细',
     'details' => $details,
 );

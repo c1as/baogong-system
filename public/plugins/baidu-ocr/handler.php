@@ -21,6 +21,16 @@ if (!isset($GLOBALS['BG_PLUGIN_CTX']) || !is_array($GLOBALS['BG_PLUGIN_CTX'])) {
 
 require_once __DIR__ . '/lib.php';
 
+/*
+ * 手写字词库连接层（唯一入口）：一行引入 + 一行初始化。
+ * 词库缺失 / 损坏 / 异常时连接层静默降级为「未命中」，不影响本插件识别。
+ */
+$bglxBridgeFile = dirname(__DIR__) . '/handwriting-lexicon/lib/bridge.php';
+if (is_file($bglxBridgeFile)) {
+    require_once $bglxBridgeFile;
+    bglx_bridge_init('baidu-ocr');
+}
+
 $ctx = $GLOBALS['BG_PLUGIN_CTX'];
 $cfg = isset($ctx['config']) && is_array($ctx['config']) ? $ctx['config'] : array();
 $catalog = isset($ctx['catalog']) && is_array($ctx['catalog']) ? $ctx['catalog'] : array();
@@ -29,35 +39,6 @@ $today = isset($ctx['today']) && preg_match('/^\d{4}-\d{2}-\d{2}$/', (string)$ct
     ? (string)$ctx['today'] : date('Y-m-d');
 
 $c = bg_baidu_cfg($cfg);
-
-/**
- * 读取设置里的「工序同义字典」，格式每行一条：
- *   铣 = 锐加工, 铁削, 铣平面
- * 冒号、等号均可；"#" 开头的行忽略。
- */
-$GLOBALS['BG_PROC_ALIAS_EXTRA'] = array();
-$aliasRaw = isset($c['procAlias']) ? trim((string)$c['procAlias']) : '';
-if ($aliasRaw !== '') {
-    foreach (preg_split('/\r\n|\r|\n/', $aliasRaw) as $aliasLine) {
-        $aliasLine = trim($aliasLine);
-        if ($aliasLine === '' || preg_match('/^[#;]/', $aliasLine)) {
-            continue;
-        }
-        if (!preg_match('/^([^:：=]+)[:：=](.+)$/u', $aliasLine, $am)) {
-            continue;
-        }
-        $base = trim($am[1]);
-        if ($base === '') {
-            continue;
-        }
-        $words = preg_split('/[,，、\s]+/u', trim($am[2]));
-        $words[] = $base;
-        $words = array_values(array_filter(array_map('trim', $words), function ($w) {
-            return $w !== '';
-        }));
-        $GLOBALS['BG_PROC_ALIAS_EXTRA'][$base] = $words;
-    }
-}
 
 if (!preg_match('#^data:image/(?:jpeg|png|webp);base64,(.+)$#s', $image, $mt)) {
     throw new RuntimeException('图片格式不支持，请上传 JPG / PNG / WebP');
@@ -220,6 +201,9 @@ function bg_baidu_strip_date($s)
 /* 零件匹配：精确 → 去分隔符包含 → 图号段包含 → 相似度模糊 */
 function bg_baidu_match_part($line, $norm, $catalog)
 {
+    /* 图号归一已收敛到字库连接层，在结果字段上统一批量处理；此处保留原识别逻辑 */
+    $norm = bg_baidu_norm($line);
+
     $lineC = bg_baidu_compact(bg_baidu_strip_date($line));
     $best = null;
     $bestScore = 0;
@@ -321,20 +305,8 @@ function bg_baidu_proc_base($s)
         '热' => array('热处理', '淬火', '调质', '发黑', '热'),
         '焊' => array('焊接', '焊工', '焊'),
     );
-    static $merged = null;
-    if ($merged === null) {
-        $merged = $map;
-        if (!empty($GLOBALS['BG_PROC_ALIAS_EXTRA']) && is_array($GLOBALS['BG_PROC_ALIAS_EXTRA'])) {
-            foreach ($GLOBALS['BG_PROC_ALIAS_EXTRA'] as $base => $words) {
-                $base = (string)$base;
-                if ($base === '') {
-                    continue;
-                }
-                $cur = isset($merged[$base]) ? $merged[$base] : array($base);
-                $merged[$base] = array_values(array_unique(array_merge($cur, (array)$words)));
-            }
-        }
-    }
+    /* 工序关键字归一已收敛到字库连接层；此处保留最小内置匹配表作为识别启发式 */
+    $merged = $map;
     $s = bg_baidu_norm($s);
     if ($s === '') {
         return '';
@@ -351,6 +323,7 @@ function bg_baidu_proc_base($s)
 
 function bg_baidu_match_process($lineNorm, $procs)
 {
+    /* 工序归一已收敛到字库连接层，在结果字段上统一批量处理；此处保留原包含匹配 */
     $best = '';
     $bestLen = 0;
     foreach ($procs as $pn) {
@@ -417,32 +390,40 @@ function bg_baidu_qty($line, $partNo)
  */
 function bg_baidu_split_parts($line, $catalog)
 {
-    $norm = bg_baidu_norm(bg_baidu_strip_date($line));
-    if ($norm === '') {
+    /*
+     * [修复] 保留字段间的空格再切段。
+     * 手写单「铣1」「50件」分列书写，若先用 norm 去掉空格会粘成「铣150件」，
+     * 数量正则会把 150 当成带单位数字，读成 150 而非 50（静默数据错误）。
+     */
+    $spaced = preg_replace('/\s+/u', ' ', (string)$line); // 合并多余空白为一个空格，保留分隔
+    $spaced = trim(bg_baidu_strip_date($spaced));
+    if ($spaced === '') {
         return array();
     }
+    /* 在「带空格」文本上定位图号段与偏移（substr 与 PREG_OFFSET_CAPTURE 均为字节偏移，一致） */
     $runs = array();
-    if (preg_match_all('/[A-Z0-9]{5,}/', $norm, $ms, PREG_OFFSET_CAPTURE)) {
+    if (preg_match_all('/[A-Za-z0-9]{4,}/', $spaced, $ms, PREG_OFFSET_CAPTURE)) {
         foreach ($ms[0] as $m) {
-            $runs[] = array('s' => $m[0], 'off' => (int)$m[1]);
+            $runs[] = array('s' => (string)$m[0], 'off' => (int)$m[1]);
         }
     }
     $anchors = array();
     foreach ($runs as $r) {
+        $runC = bg_baidu_compact($r['s']); // 匹配时归一化大小写/分隔符，不破坏原文分隔
         $hit = null;
         $hitScore = 0;
         foreach ($catalog as $p) {
             $noC = bg_baidu_compact(isset($p['no']) ? (string)$p['no'] : '');
-            if ($noC === '') {
+            if ($noC === '' || $runC === '') {
                 continue;
             }
             $score = 0;
-            if (strpos($noC, $r['s']) !== false) {
+            if (strpos($noC, $runC) !== false) {
                 $score = 1;
-            } elseif (strpos($r['s'], $noC) !== false) {
+            } elseif (strpos($runC, $noC) !== false) {
                 $score = 0.95;
             } else {
-                $sim = bg_baidu_sim($r['s'], $noC);
+                $sim = bg_baidu_sim($runC, $noC);
                 if ($sim >= 0.72) {
                     $score = 0.5 + $sim * 0.4;
                 }
@@ -464,10 +445,10 @@ function bg_baidu_split_parts($line, $catalog)
     $n = count($anchors);
     for ($i = 0; $i < $n; $i++) {
         $start = $i === 0 ? 0 : $anchors[$i]['off'];
-        $end = $i + 1 < $n ? $anchors[$i + 1]['off'] : strlen($norm);
+        $end = $i + 1 < $n ? $anchors[$i + 1]['off'] : strlen($spaced);
         $out[] = array(
             'part' => $anchors[$i]['part'],
-            'text' => substr($norm, $start, $end - $start),
+            'text' => substr($spaced, $start, $end - $start),
         );
     }
     return $out;
@@ -640,6 +621,24 @@ foreach ($items as $idx => $it) {
 }
 if ($dateHint !== '') {
     $warnings[] = $dateHint;
+}
+
+/* 手写字词库连接层：一次批量归一明细字段（auto 改写），suggest 并入告警 */
+if (function_exists('bglx_bridge_norm_fields')) {
+    $normalized = bglx_bridge_norm_fields(
+        array('items' => $items),
+        array('plugin' => 'baidu-ocr')
+    );
+    $items = isset($normalized['fields']['items']) ? $normalized['fields']['items'] : $items;
+    foreach (bglx_bridge_suggestions() as $bglxWarn) {
+        if (count($warnings) >= 5) {
+            break;
+        }
+        $hint = '字库建议：' . $bglxWarn . '，请人工确认';
+        if (!in_array($hint, $warnings, true)) {
+            $warnings[] = $hint;
+        }
+    }
 }
 
 /* 置信度：匹配行占候选行的比例 */

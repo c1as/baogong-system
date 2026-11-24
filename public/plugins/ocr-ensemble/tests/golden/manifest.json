@@ -1,0 +1,26 @@
+{
+  "version": "1.0.0",
+  "name": "OCR 融合黄金样本集",
+  "description": "覆盖形近字、图号粘连、工序别名、数量粘连、正常五类手写痛点，用于 G2/G3/G4/R-07 版本对比的固定基准。",
+  "owner": "业务标注组（待指定）",
+  "createdAt": "2026-11-24",
+  "scenarioTags": ["形近字", "图号粘连", "工序别名", "数量粘连", "正常"],
+  "cases": 6,
+  "targetPerScenario": 40,
+  "note": "Q6 建议每场景 ≥40 单、总计 ≥200；当前为最小可用样例，补充样本后重跑 tools/eval.php 固化指标。",
+  "baselineSnapshot": {
+    "keyFieldAccuracy": 0.93,
+    "agreementRate": 0.82,
+    "reviewRate": 0.28,
+    "traceRate": 0.0,
+    "ece": 0.045,
+    "note": "示例基线快照，实际以首轮 eval 输出覆盖"
+  },
+  "schema": {
+    "image_ref": "图片相对路径或标识",
+    "expect": "人工标注 {date, worker, workshop, items:[{partNo, process, qty}]}",
+    "base": "基线融合结果（可选）",
+    "ocf": "增强融合结果 {字段值, confidence, decision, rule, trace}（可选）",
+    "tags": "场景标签数组"
+  }
+}
