@@ -190,46 +190,13 @@ function imgUrl(name) {
   return (state.imageBase || '/img/') + encodeURIComponent(name);
 }
 
-/* 内置 PDF 查看器（PDF.js）。path 为图纸相对路径，如 drawings/xxx.pdf */
-function openPdfViewer(path, name) {
-  if (!path) return;
-  let ov = document.getElementById('pdfOverlay');
-  if (!ov) {
-    ov = document.createElement('div');
-    ov.id = 'pdfOverlay';
-    ov.className = 'pdf-overlay';
-    ov.innerHTML = '<iframe id="pdfFrame" title="图纸查看" src="about:blank"></iframe>';
-    document.body.appendChild(ov);
-  }
-  const frame = ov.querySelector('#pdfFrame');
-  const next = 'pdf.html?f=' + encodeURIComponent(path) + '&name=' + encodeURIComponent(name || '图纸');
-  // 同一文件重复打开时复用已加载的 iframe，避免中断正在进行的请求
-  if (frame.dataset.src !== next) {
-    frame.dataset.src = next;
-    frame.src = next;
-  }
-  ov.hidden = false;
-  document.body.classList.add('pdf-open');
-}
-
-function closePdfViewer() {
-  const ov = document.getElementById('pdfOverlay');
-  if (!ov) return;
-  ov.hidden = true;
-  document.body.classList.remove('pdf-open');
-  // 只隐藏、不重置 iframe.src：重置会中断加载中的 PDF 请求（net::ERR_ABORTED）
-}
-
-window.addEventListener('message', (e) => {
-  if (e.data === 'bg-pdf-close') closePdfViewer();
-});
-
 const state = {
   plugins: [],
   auth: false,
   imageBase: '/img/',
   counts: { parts: 0, orders: 0, reports: 0, items: 0 },
   firstDate: '',
+  marketUpgradeCount: 0,
 };
 
 /* 远程数据：零件对象按 id 缓存，供工序、名称、单价回显 */
@@ -300,6 +267,10 @@ const PATHS = {
   camera:
     '<path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3z"/><circle cx="12" cy="13" r="3"/>',
   alert: '<circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/>',
+  store: '<path d="M3 9 4.5 4h15L21 9"/><path d="M3 9h18v2a3 3 0 0 1-6 0 3 3 0 0 1-6 0 3 3 0 0 1-6 0V9Z"/><path d="M5 13v7h14v-7"/><path d="M9 20v-5h6v5"/>',
+  download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>',
+  refresh: '<path d="M21 2v6h-6"/><path d="M3 22v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.9-3.4L21 8"/><path d="M3 16l2.6 2.4A9 9 0 0 0 20.5 15"/>',
+  trash: '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/>',
   file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
   settings:
@@ -402,6 +373,26 @@ async function refreshPlugins() {
   }
 }
 
+/* 插件市场角标：非阻塞加载升级数量，失败静默 */
+async function refreshMarketBadge() {
+  try {
+    const data = await api('GET', 'api.php?action=plugin.market.list');
+    state.marketUpgradeCount = Number(data.upgradeCount) || 0;
+  } catch {
+    state.marketUpgradeCount = 0;
+  }
+  const badge = $('#marketBadge');
+  if (badge) {
+    const n = state.marketUpgradeCount;
+    if (n > 0) {
+      badge.textContent = n;
+      badge.hidden = false;
+    } else {
+      badge.hidden = true;
+    }
+  }
+}
+
 /* 已启用且支持报工识别（report.ocr）的插件 */
 function ocrPlugins() {
   return state.plugins.filter((p) => p.enabled && (p.capabilities || []).includes('report.ocr'));
@@ -472,7 +463,13 @@ function renderShell() {
         ${navItem('order-new', '#/orders/new', 'filePlus', '新增订单')}
       </nav>
       <div class="side-foot">
+        <button class="side-btn" data-action="backup">${icon('database', 16)}数据备份</button>
+        <a class="side-btn" href="#/settings">${icon('settings', 16)}识别插件设置</a>
+        <a class="side-btn" href="#/market">${icon('store', 16)}插件市场<span class="nav-badge" id="marketBadge"${
+          state.marketUpgradeCount > 0 ? '' : ' hidden'
+        }>${state.marketUpgradeCount}</span></a>
         ${state.auth ? `<button class="side-btn" data-action="logout">${icon('logout', 16)}退出登录</button>` : ''}
+        <div class="side-ver">v2.7 · 数据保存在服务器</div>
       </div>
     </aside>
 
@@ -483,16 +480,6 @@ function renderShell() {
           <p id="pageSub"></p>
         </div>
         <div class="actions" id="pageActions"></div>
-        <div class="settings-wrap">
-          <button class="icon-btn settings-btn" type="button" id="settingsBtn" title="设置" aria-label="设置" aria-haspopup="true">
-            ${icon('settings', 18)}
-          </button>
-          <div class="settings-menu" id="settingsMenu" hidden>
-            <button type="button" data-action="backup">${icon('database', 16)}<span>数据备份</span></button>
-            <a href="#/settings">${icon('settings', 16)}<span>识别插件设置</span></a>
-            <div class="settings-ver">v2.7 · 数据保存在服务器</div>
-          </div>
-        </div>
       </header>
       <div class="view" id="view"></div>
     </main>
@@ -505,18 +492,6 @@ function renderShell() {
       ${tabItem('data', '#/data', 'database', '数据')}
     </nav>`;
   app.hidden = false;
-
-  const sBtn = $('#settingsBtn');
-  const sMenu = $('#settingsMenu');
-  if (sBtn && sMenu) {
-    sBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      sMenu.hidden = !sMenu.hidden;
-    });
-    sMenu.addEventListener('click', (e) => {
-      if (e.target.closest('[data-action], a')) sMenu.hidden = true;
-    });
-  }
 }
 
 function setHead(title, sub, actions = '') {
@@ -557,6 +532,7 @@ function route() {
   if (key === 'stats') return viewStats();
   if (key === 'data') return viewDataStats();
   if (key === 'settings') return viewSettings();
+  if (key === 'market') return viewMarket();
 
   location.replace('#/parts');
 }
@@ -2994,14 +2970,8 @@ function viewStats() {
       return {
         items: (data.items || []).map((o) => ({
           value: o.id,
-          // 零件号作为主标题，订单号放到副标题，方便按零件查找
-          label: o.partNo || o.no,
-          sub: [
-            o.partNo ? o.no : '',
-            o.partName || '',
-            o.process || '未指定工序',
-            `数量 ${fmtQty(o.qty)}`,
-          ]
+          label: o.no,
+          sub: [o.partNo || '', o.partName || '', o.process || '未指定工序', `数量 ${fmtQty(o.qty)}`]
             .filter(Boolean)
             .join(' · '),
         })),
@@ -3269,7 +3239,7 @@ async function openPartDrawings(id) {
       const d = ds[Number(btn.dataset.drawView)];
       if (!d) return;
       if (d.type === 'pdf') {
-        openPdfViewer(d.path, d.name);
+        window.open(imgUrl(d.path), '_blank', 'noopener');
         return;
       }
       const box = $('#drawingPreview');
@@ -3822,11 +3792,232 @@ function engineOverviewHtml() {
   </div>`;
 }
 
+/* ==================================================================== 插件市场（v1.1） */
+
+let marketFilter = 'all'; // all | upgradable | installed
+
+const MARKET_STATUS_LABEL = {
+  installable: '可安装',
+  upgradable: '可升级',
+  installed: '已安装',
+  local_newer: '本地较新',
+  unmanaged: '本地插件',
+};
+
+function marketStatusChip(s) {
+  const cls = { upgradable: 'warn', installed: 'ok', installable: '', local_newer: 'muted', unmanaged: 'muted' }[s] || '';
+  return `<span class="mk-chip ${cls}">${esc(MARKET_STATUS_LABEL[s] || s)}</span>`;
+}
+
+async function viewMarket() {
+  setHead(
+    '插件市场',
+    '在线发现、安装与升级插件，无需重装 App',
+    `<button class="btn btn-ghost" data-mk="source">${icon('settings', 16)}来源设置</button>
+     <button class="btn btn-ghost" data-mk="refresh">${icon('refresh', 16)}刷新</button>`
+  );
+  const view = $('#view');
+  view.innerHTML = `<div class="mk-loading">正在加载插件市场…</div>`;
+  let data;
+  try {
+    data = await api('GET', 'api.php?action=plugin.market.list');
+  } catch (err) {
+    view.innerHTML = `<div class="empty"><div class="empty-icon">${icon('alert', 26)}</div>
+      <div class="empty-title">无法加载插件市场</div><p>${esc(err.message)}</p>
+      <button class="btn btn-primary" data-mk="source">配置来源</button></div>`;
+    bindMarketShell(view, null);
+    return;
+  }
+  renderMarket(view, data);
+  bindMarketShell(view, data);
+}
+
+function renderMarket(view, data) {
+  let items = (data.items || []).slice();
+  if (marketFilter === 'upgradable') items = items.filter((x) => x.status === 'upgradable');
+  else if (marketFilter === 'installed') items = items.filter((x) => ['installed', 'upgradable', 'local_newer'].includes(x.status));
+  const src = data.source || {};
+  const caps = (data.capabilities || {});
+
+  const tabs = `<div class="mk-tabs">
+    <button class="mk-tab ${marketFilter === 'all' ? 'active' : ''}" data-mk-filter="all">全部 <em>${(data.items || []).length}</em></button>
+    <button class="mk-tab ${marketFilter === 'upgradable' ? 'active' : ''}" data-mk-filter="upgradable">可升级 <em>${Number(data.upgradeCount) || 0}</em></button>
+    <button class="mk-tab ${marketFilter === 'installed' ? 'active' : ''}" data-mk-filter="installed">已安装</button>
+  </div>`;
+
+  const sourceBar = `<div class="mk-source">
+    <div class="mk-source-info"><span class="mk-source-name">${esc(src.name || '未配置来源')}</span>
+      <span class="mk-source-url">${esc(src.url || '')}</span></div>
+    <span class="mk-meta">${data.cached ? '缓存 · ' : ''}${esc(data.fetchedAt || '')}</span>
+  </div>`;
+
+  const cards = items.map((it) => {
+    const capsHtml = (it.capabilities || []).map((c) => `<span class="mk-cap">${esc(c)}</span>`).join('');
+    let actions = '';
+    if (it.status === 'installable') {
+      actions = `<button class="btn btn-primary btn-sm" data-mk-install="${esc(it.id)}">${icon('download', 14)}安装</button>`;
+    } else if (it.status === 'upgradable') {
+      actions = `<button class="btn btn-primary btn-sm" data-mk-upgrade="${esc(it.id)}">${icon('download', 14)}升级到 ${esc(it.version)}</button>`;
+    } else if (it.status === 'unmanaged') {
+      actions = `<span class="mk-hint">本地插件（不在市场索引中）</span>`;
+    } else {
+      actions = `<span class="mk-hint">${it.status === 'local_newer' ? '本地版本较新' : '已是最新'}</span>`;
+    }
+    const canUninstall = it.source === 'market';
+    const uninstallBtn = canUninstall
+      ? `<button class="btn btn-ghost btn-sm" data-mk-uninstall="${esc(it.id)}">${icon('trash', 14)}卸载</button>` : '';
+    const ver = it.localVersion ? `${esc(it.localVersion)} → ${esc(it.version)}` : esc(it.version);
+    return `<div class="mk-card">
+      <div class="mk-card-top">
+        <div class="mk-card-title"><strong>${esc(it.name || it.id)}</strong><code>${esc(it.id)}</code></div>
+        ${marketStatusChip(it.status)}
+      </div>
+      <p class="mk-desc">${esc(it.description || '暂无说明')}</p>
+      <div class="mk-card-meta"><span>版本 ${ver}</span>${it.author ? `<span>作者 ${esc(it.author)}</span>` : ''}
+        ${it.source ? `<span>来源 ${it.source === 'market' ? '市场副本' : '系统必备'}</span>` : ''}</div>
+      ${capsHtml ? `<div class="mk-caps">${capsHtml}</div>` : ''}
+      <div class="mk-actions">
+        <button class="btn btn-ghost btn-sm" data-mk-detail="${esc(it.id)}">详情</button>
+        ${actions}${uninstallBtn}
+      </div>
+    </div>`;
+  }).join('');
+
+  view.innerHTML = `${sourceBar}${tabs}${cards || `<div class="empty"><div class="empty-icon">${icon('store', 26)}</div>
+    <div class="empty-title">没有匹配的插件</div><p>试试刷新索引或切换筛选条件</p></div>`}
+    <p class="settings-note">市场插件安装到 <code>data/market-plugins/</code>，系统更新不会覆盖；必备插件留在 <code>public/plugins/</code> 随系统更新，市场只读。</p>`;
+}
+
+function bindMarketShell(view, data) {
+  const headActions = $('#pageActions');
+  if (headActions) {
+    const r = headActions.querySelector('[data-mk="refresh"]');
+    if (r) r.onclick = () => doMarketRefresh();
+    const s = headActions.querySelector('[data-mk="source"]');
+    if (s) s.onclick = () => openMarketSource();
+  }
+  view.querySelectorAll('[data-mk-filter]').forEach((b) => {
+    b.onclick = () => { marketFilter = b.dataset.mkFilter; viewMarket(); };
+  });
+  view.addEventListener('click', async (e) => {
+    const el = e.target.closest('[data-mk-detail],[data-mk-install],[data-mk-upgrade],[data-mk-uninstall]');
+    if (!el) return;
+    const id = el.dataset.mkDetail || el.dataset.mkInstall || el.dataset.mkUpgrade || el.dataset.mkUninstall;
+    if (el.dataset.mkDetail) return openMarketDetail(id, data);
+    if (el.dataset.mkInstall) return doMarketAction('install', id, '安装');
+    if (el.dataset.mkUpgrade) return doMarketAction('upgrade', id, '升级');
+    if (el.dataset.mkUninstall) return doMarketAction('uninstall', id, '卸载');
+  });
+  const srcBtn = view.querySelector('[data-mk="source"]');
+  if (srcBtn) srcBtn.onclick = () => openMarketSource();
+}
+
+async function doMarketRefresh() {
+  try {
+    await api('GET', 'api.php?action=plugin.market.list&refresh=1');
+    refreshMarketBadge();
+    await viewMarket();
+    toast('索引已刷新', 'ok');
+  } catch (err) { toast(err.message, 'err'); }
+}
+
+async function doMarketAction(op, id, label) {
+  if (op === 'uninstall') {
+    const ok = await confirmDialog({
+      title: '确认卸载插件',
+      message: `确定要卸载「${id}」吗？若为系统必备插件的市场副本，卸载后将回落到系统基线。`,
+      okText: '确认卸载', danger: true,
+    });
+    if (!ok) return;
+  }
+  const btn = document.querySelector(`[data-mk-${op}="${id}"]`);
+  if (btn) { btn.disabled = true; btn.textContent = '处理中…'; }
+  try {
+    const body = op === 'uninstall' ? { id, confirm: true } : { id };
+    const res = await api('POST', `api.php?action=plugin.market.${op}`, body);
+    toast(`${label}成功${res.version ? ' · v' + esc(res.version) : ''}`, 'ok');
+    await refreshPlugins();
+    refreshMarketBadge();
+    await viewMarket();
+  } catch (err) {
+    toast(`${label}失败：${err.message}`, 'err');
+    if (btn) { btn.disabled = false; }
+  }
+}
+
+function openMarketDetail(id, data) {
+  const it = (data && data.items || []).find((x) => x.id === id);
+  if (!it) return toast('插件信息不存在', 'err');
+  const capHtml = (it.capabilities || []).map((c) => `<span class="mk-cap">${esc(c)}</span>`).join('') || '无';
+  const settingRows = (it.settings || []).map((f) =>
+    `<div class="mk-setting"><strong>${esc(f.label || f.key)}</strong><code>${esc(f.key)}</code><span>${esc(f.type)}</span></div>`
+  ).join('') || '<p class="mk-hint">该插件无配置项</p>';
+  const { close } = openModal(`<h3>${esc(it.name || it.id)} <small>v${esc(it.version)}</small></h3>
+    <div class="mk-detail">
+      <p>${esc(it.description || '暂无说明')}</p>
+      <div class="mk-detail-grid">
+        <div><span>标识</span><code>${esc(it.id)}</code></div>
+        <div><span>状态</span>${marketStatusChip(it.status)}</div>
+        <div><span>能力</span><div class="mk-caps">${capHtml}</div></div>
+        <div><span>作者</span>${esc(it.author || '—')}</div>
+        <div><span>包大小</span>${esc(fmtBytes(it.packageSize || 0))}</div>
+        <div><span>最低系统</span>${esc(it.minSystemVersion || '不限')}</div>
+      </div>
+      ${it.changelog ? `<h4>更新说明</h4><p class="mk-changelog">${esc(it.changelog)}</p>` : ''}
+      <h4>配置项</h4>${settingRows}
+    </div>
+    <div class="modal-actions"><button class="btn btn-primary" data-mk-close>关闭</button></div>`);
+  const closeBtn = document.querySelector('[data-mk-close]');
+  if (closeBtn && close) closeBtn.onclick = close;
+}
+
+function openMarketSource() {
+  api('GET', 'api.php?action=plugin.source.get').then((d) => {
+    const s = d.source || {};
+    const { root, close } = openModal(`<h3>插件市场来源</h3>
+      <div class="mk-source-form">
+        <label>来源名称<input class="input" id="mkSrcName" value="${esc(s.name || '')}" placeholder="官方源"></label>
+        <label>索引地址（https）<input class="input" id="mkSrcUrl" value="${esc(s.url || '')}" placeholder="https://api.github.com/..."></label>
+        <label>访问令牌（可选，公开仓库留空）<input class="input" id="mkSrcToken" type="password" value="${esc(s.tokenMasked || '')}" placeholder="留空表示保持原值"></label>
+        <p class="settings-note">令牌仅保存在本机 <code>data/plugin-market.json</code>，不会写入插件包或日志。</p>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" data-mk-test>测试连接</button>
+        <button class="btn btn-ghost" data-mk-cancel>取消</button>
+        <button class="btn btn-primary" data-mk-save>保存</button>
+      </div>`);
+    root.querySelector('[data-mk-cancel]').onclick = close;
+    root.querySelector('[data-mk-test]').onclick = async () => {
+      const btn = root.querySelector('[data-mk-test]');
+      btn.disabled = true; btn.textContent = '测试中…';
+      try {
+        const r = await api('POST', 'api.php?action=plugin.source.test', {
+          url: root.querySelector('#mkSrcUrl').value.trim(),
+          token: root.querySelector('#mkSrcToken').value.trim(),
+        });
+        toast(`连接成功 · ${r.count} 个插件 · ${r.ms}ms`, 'ok');
+      } catch (err) { toast(err.message, 'err'); }
+      finally { btn.disabled = false; btn.textContent = '测试连接'; }
+    };
+    root.querySelector('[data-mk-save]').onclick = async () => {
+      try {
+        await api('POST', 'api.php?action=plugin.source.save', {
+          name: root.querySelector('#mkSrcName').value.trim(),
+          url: root.querySelector('#mkSrcUrl').value.trim(),
+          token: root.querySelector('#mkSrcToken').value.trim(),
+        });
+        close(); toast('来源已保存', 'ok'); viewMarket();
+      } catch (err) { toast(err.message, 'err'); }
+    };
+  }).catch((err) => toast(err.message, 'err'));
+}
+
 function viewSettings() {
   setHead(
     '识别插件',
     '拍照识别以插件形式接入，可在这里启用、配置与测试',
-    `<a class="btn btn-ghost" href="#/reports/new">${icon('back', 16)}返回新增报工</a>`
+    `<a class="btn btn-ghost" href="#/market">${icon('store', 16)}插件市场</a>
+     <a class="btn btn-ghost" href="#/reports/new">${icon('back', 16)}返回新增报工</a>`
   );
 
   const view = $('#view');
@@ -3997,6 +4188,7 @@ async function boot() {
   try {
     await refreshState();
     await refreshPlugins();
+    await refreshMarketBadge();
     hideLogin();
     renderShell();
     if (!location.hash) history.replaceState(null, '', '#/parts');
@@ -4061,10 +4253,6 @@ document.addEventListener('click', async (e) => {
 
   if (!e.target.closest('.combo')) closeAllCombos();
   if (!e.target.closest('.ms')) $$('.ms-panel').forEach((p) => (p.hidden = true));
-  if (!e.target.closest('.settings-wrap')) {
-    const menu = document.getElementById('settingsMenu');
-    if (menu) menu.hidden = true;
-  }
 });
 
 document.addEventListener('pointerdown', (e) => {
