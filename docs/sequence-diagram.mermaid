@@ -1,0 +1,174 @@
+%% 报工系统 · 插件市场 —— 四段程序调用时序图
+%% 来源：docs/插件市场-架构设计.md §A.4
+
+%% ===== A.4.1 拉取索引并展示列表 =====
+sequenceDiagram
+    autonumber
+    actor U as 手机端用户
+    participant UI as app.js 市场列表
+    participant API as api.php
+    participant MC as MarketController
+    participant SC as SourceConfig
+    participant IC as IndexClient
+    participant VH as VersionUtil
+    participant GH as api.github.com
+    participant LOC as bg_plugin_all()
+
+    U->>UI: 进入设置 → 插件市场
+    UI->>API: GET api.php?action=plugin.market.list
+    API->>MC: list(force=false)
+    MC->>SC: load()
+    SC-->>MC: {url, token}
+    MC->>IC: fetch(force=false)
+    IC->>IC: 读 public/.cache/plugins-index.json
+    alt 缓存有效且未强制刷新（TTL 300s）
+        IC-->>MC: 缓存索引
+    else 缓存失效 / refresh=1
+        IC->>GH: GET /repos/c1as/baogong-system/contents/plugins-index.json?ref=plugin
+        Note over IC,GH: Authorization: Bearer token（可选）<br/>Accept: application/vnd.github+json
+        GH-->>IC: 200 {content: base64, sha: ...}
+        IC->>IC: base64_decode → json_decode → 校验 schema
+        IC->>IC: 写缓存（失败仅告警，不阻断）
+        IC-->>MC: 索引数组
+    end
+    MC->>LOC: 扫描 public/plugins/ 取本地版本
+    LOC-->>MC: 6 个存量插件 + 已装市场插件
+    loop 每个索引条目
+        MC->>VH: compare(local.version, remote.version)
+        VH-->>MC: -1 / 0 / 1
+        MC->>MC: 计算 status、enabled、minSystemVersion 满足度
+    end
+    MC-->>API: {items[], upgradeCount, fetchedAt, cached}
+    API-->>UI: bg_json(200, ...)
+    UI->>UI: 渲染卡片 + 入口角标 upgradeCount
+    UI-->>U: 列表：已装/可装/可升级
+    Note over U,GH: 网络失败 → IC 返回 502 + 中文错误；UI 提供"刷新列表/检查来源"按钮
+
+%% ===== A.4.2 安装插件 =====
+sequenceDiagram
+    autonumber
+    actor U as 手机端用户
+    participant UI as app.js
+    participant API as api.php
+    participant MC as MarketController
+    participant IC as IndexClient
+    participant PF as PackageFetcher
+    participant ZI as ZipInspector
+    participant PI as PluginInstaller
+    participant GH as api.github.com
+    participant FS as public/plugins/
+
+    U->>UI: 点「安装」
+    UI->>API: POST action=plugin.market.install {id}
+    API->>API: 校验 id 正则 + POST 方法
+    API->>MC: install(id, version)
+    MC->>IC: 取目标条目（含 package.url/sha256/size）
+    MC->>MC: 检查本地是否已装 → 已装则 409
+    MC->>PF: downloadToTemp(url, token, sha256, size)
+    PF->>GH: GET /repos/.../releases/assets/{asset_id}
+    Note over PF,GH: Accept: application/octet-stream<br/>curl 跟随 302 到 CDN，CA 用 lib/cacert.pem
+    GH-->>PF: zip 二进制流（写盘，>5MB 立即中止）
+    PF->>PF: hash_file('sha256') 比对 → 不符 410
+    PF-->>MC: 临时 zip 路径
+    MC->>ZI: validate(zip, expectId=id)
+    ZI->>ZI: 逐条目：路径白名单 / zip-slip / 软链 / 扩展名 / 大小
+    ZI->>ZI: 读 plugin.json：JSON 合法、id==expectId、version==索引、entry 存在
+    alt 校验失败
+        ZI-->>MC: 422 + 中文原因
+        MC->>PF: 删除临时 zip
+        MC-->>API: 失败
+        API-->>UI: bg_fail(422, '插件包校验失败：...')
+    else 校验通过
+        ZI->>FS: extract 到 .tmp-<id>-<rand>/
+        ZI->>ZI: 二次校验 bg_plugin_manifest()
+        MC->>PI: install: rename(.tmp-*, plugins/<id>)
+        PI->>FS: 原子改名（同目录，瞬时完成）
+        alt 改名失败
+            PI->>FS: 删除 .tmp-*，保留原状
+            PI-->>MC: 500
+        else 成功
+            PI->>PF: 删除临时 zip
+            PI->>PI: 不写 data/plugins.json（依赖 defaultEnabled）
+            PI-->>MC: 新插件 Manifest
+            MC-->>API: {ok, id, version, plugin}
+            API-->>UI: bg_json(200, ...)
+            UI->>UI: 提示成功 → 跳设置页配置密钥并自检
+        end
+    end
+
+%% ===== A.4.3 升级插件（保留配置） =====
+sequenceDiagram
+    autonumber
+    actor U as 手机端用户
+    participant UI as app.js
+    participant API as api.php
+    participant MC as MarketController
+    participant VH as VersionUtil
+    participant PF as PackageFetcher
+    participant ZI as ZipInspector
+    participant PI as PluginInstaller
+    participant FS as public/plugins/
+    participant ST as data/plugins.json（只读）
+
+    U->>UI: 详情页点「升级」
+    UI->>UI: 二次确认弹窗：保留密钥与启用状态
+    U->>UI: 确认
+    UI->>API: POST action=plugin.market.upgrade {id}
+    API->>MC: upgrade(id, version)
+    MC->>VH: compare(local, remote)>0 且 minSystemVersion 满足？
+    alt 不满足
+        VH-->>MC: 否
+        MC-->>API: 409 已是最新/目标版本更低
+    else 满足
+        MC->>PF: 下载并校验新包（同安装流程）
+        PF-->>MC: 临时 zip
+        MC->>ZI: validate + extract 到 .tmp-<id>-<rand>/
+        ZI-->>MC: 校验通过
+        MC->>PI: upgrade(id, to)
+        PI->>ST: 读取旧配置快照（仅读，用于返回提示）
+        ST-->>PI: {enabled, settings{apiKey...}}
+        PI->>FS: rename(plugins/<id> → .bak-<id>-<old>-<ts>)
+        PI->>FS: rename(.tmp-<id>-<rand> → plugins/<id>)
+        alt 任一步失败
+            PI->>FS: 把 .bak-* rename 回 plugins/<id>
+            PI->>FS: 清理 .tmp-*
+            PI-->>MC: 500 已回滚
+        else 成功
+            PI->>PI: 不写 data/plugins.json；新设置项由 bg_plugin_config 取 default
+            PI->>ST: 再次读取确认配置字节未变（断言）
+            PI-->>MC: {from, to, configPreserved:true}
+            MC-->>API: bg_json(200, ...)
+            API-->>UI: 升级成功，提示"密钥与启用状态已保留"
+            UI->>UI: 引导运行 check.php（API 链接测试）
+        end
+    end
+
+%% ===== A.4.4 卸载插件 =====
+sequenceDiagram
+    autonumber
+    actor U as 手机端用户
+    participant UI as app.js
+    participant API as api.php
+    participant MC as MarketController
+    participant PI as PluginInstaller
+    participant FS as public/plugins/
+    participant ST as data/plugins.json（不动）
+
+    U->>UI: 详情页点「卸载」
+    UI->>UI: 二次确认：输入/勾选确认，提示不删除 data/ 数据
+    U->>UI: 确认
+    UI->>API: POST action=plugin.market.uninstall {id, confirm:true}
+    API->>API: 校验 id + confirm===true + POST
+    API->>MC: uninstall(id)
+    MC->>PI: uninstall(id)
+    PI->>PI: assertSafePath(pluginsDir + '/' + id) — 拒绝越界与 data/ 路径
+    PI->>FS: rename(plugins/<id> → .trash/<id>-<ts>)
+    alt 移入失败
+        PI-->>MC: 500
+    else 成功
+        PI->>PI: 延迟删除 .trash（或下次进入市场时清理）
+        PI->>ST: 不写、不删任何键（残留项被 bg_plugin_all 忽略）
+        Note over PI,ST: 如用户要求彻底清理密钥，提供独立显式操作<br/>仅删该 id 子键，不动其它插件（P1）
+        PI-->>MC: ok
+        MC-->>API: bg_json(200, {ok:true, id})
+        API-->>UI: 提示已卸载 → 列表状态变 installable
