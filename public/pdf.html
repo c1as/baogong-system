@@ -29,9 +29,9 @@
     border: 1px solid #e3e8f0; background: #fff; color: #374151; font-size: 13px; cursor: pointer;
   }
   header button.tool:active { background: #f1f5fb; }
-  #scroll { flex: 1; overflow: auto; -webkit-overflow-scrolling: touch; padding: 12px; }
-  #pageRoot { display: flex; flex-direction: column; align-items: center; gap: 12px; }
-  #pageRoot canvas { background: #fff; border-radius: 6px; box-shadow: 0 2px 10px rgba(16,24,40,.12); max-width: 100%; height: auto !important; }
+  #scroll { flex: 1; overflow: auto; -webkit-overflow-scrolling: touch; padding: 12px; touch-action: pan-x pan-y; overscroll-behavior: contain; }
+  #pageRoot { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; transform-origin: top left; }
+  #pageRoot canvas { background: #fff; border-radius: 6px; box-shadow: 0 2px 10px rgba(16,24,40,.12); display: block; }
   #status {
     position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
     padding: 24px; text-align: center; font-size: 13px; color: #6b7280; line-height: 1.7;
@@ -88,6 +88,7 @@
   var userScale = 1;
   var fitScale = 1;
   var rendering = false;
+  var pendingRender = false;
 
   function pageWidth() {
     var w = scrollEl.clientWidth - 24;
@@ -95,7 +96,11 @@
   }
 
   function renderAll() {
-    if (!pdf || rendering) return;
+    if (!pdf) return;
+    if (rendering) {
+      pendingRender = true;
+      return;
+    }
     rendering = true;
     var targetWidth = pageWidth();
     root.innerHTML = '';
@@ -128,24 +133,82 @@
     chain.then(function () {
       rendering = false;
       statusEl.hidden = true;
+      if (pendingRender) {
+        pendingRender = false;
+        renderAll();
+      }
     }).catch(function (err) {
       rendering = false;
+      pendingRender = false;
       fail('图纸渲染失败', (err && err.message) ? err.message : '');
     });
   }
 
-  document.getElementById('zoomIn').addEventListener('click', function () {
-    userScale = Math.min(4, userScale * 1.25);
+  function applyScale(s) {
+    userScale = Math.min(6, Math.max(0.3, s));
     renderAll();
+  }
+
+  document.getElementById('zoomIn').addEventListener('click', function () {
+    applyScale(userScale * 1.25);
   });
   document.getElementById('zoomOut').addEventListener('click', function () {
-    userScale = Math.max(0.4, userScale / 1.25);
-    renderAll();
+    applyScale(userScale / 1.25);
   });
   document.getElementById('fit').addEventListener('click', function () {
-    userScale = 1;
-    renderAll();
+    applyScale(1);
   });
+
+  /* 双指捏合缩放：手势过程中用 transform 预览，松手后按新比例重绘（保证清晰度） */
+  var pinch = null;
+  var suppressTap = 0;
+
+  function touchDist(touches) {
+    var dx = touches[0].clientX - touches[1].clientX;
+    var dy = touches[0].clientY - touches[1].clientY;
+    return Math.sqrt(dx * dx + dy * dy) || 1;
+  }
+
+  scrollEl.addEventListener('touchstart', function (e) {
+    if (e.touches.length === 2) {
+      pinch = { start: touchDist(e.touches), base: userScale, live: userScale };
+    }
+  }, { passive: true });
+
+  scrollEl.addEventListener('touchmove', function (e) {
+    if (!pinch || e.touches.length !== 2) return;
+    e.preventDefault();
+    var ratio = touchDist(e.touches) / pinch.start;
+    pinch.live = Math.min(6, Math.max(0.3, pinch.base * ratio));
+    root.style.transform = 'scale(' + (pinch.live / userScale).toFixed(3) + ')';
+  }, { passive: false });
+
+  function endPinch() {
+    if (!pinch) return;
+    var s = pinch.live;
+    pinch = null;
+    suppressTap = Date.now() + 400;
+    root.style.transform = '';
+    if (Math.abs(s - userScale) > 0.01) applyScale(s);
+  }
+
+  scrollEl.addEventListener('touchend', function (e) {
+    if (pinch && e.touches.length < 2) endPinch();
+  }, { passive: true });
+  scrollEl.addEventListener('touchcancel', endPinch, { passive: true });
+
+  /* 双击放大 / 还原 */
+  var lastTap = 0;
+  scrollEl.addEventListener('touchend', function (e) {
+    if (e.touches.length || Date.now() < suppressTap) return;
+    var now = Date.now();
+    if (now - lastTap < 300) {
+      lastTap = 0;
+      applyScale(userScale > 1.05 ? 1 : 2.2);
+    } else {
+      lastTap = now;
+    }
+  }, { passive: true });
 
   var resizeTimer = null;
   window.addEventListener('resize', function () {

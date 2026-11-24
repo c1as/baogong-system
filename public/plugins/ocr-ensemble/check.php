@@ -109,6 +109,63 @@ $details[] = array(
         : '必须是 0~1 之间的数字',
 );
 
+/* ---- OCF 增强层自检：信誉/校准文件、连接层、黄金样本集 ---- */
+function ocf_check_dir()
+{
+    if (isset($GLOBALS['DATA_DIR']) && is_string($GLOBALS['DATA_DIR']) && $GLOBALS['DATA_DIR'] !== '') {
+        return rtrim(str_replace('\\', '/', $GLOBALS['DATA_DIR']), '/');
+    }
+    return dirname(__DIR__, 3) . '/data';
+}
+function ocf_check_json_writable($path)
+{
+    $dir = dirname($path);
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0775, true);
+    }
+    if (!is_dir($dir) || !is_writable($dir)) {
+        return array(false, '目录不可写：' . $dir);
+    }
+    if (is_file($path)) {
+        $raw = @file_get_contents($path);
+        if ($raw === false || $raw === '' || json_decode($raw, true) === null) {
+            return array(false, 'JSON 损坏，运行时将自动重建/恒等回退：' . basename($path));
+        }
+        return array(true, basename($path) . ' 存在且可解析（可重建）');
+    }
+    return array(true, '尚未生成（首次高可信识别或离线工具会创建）');
+}
+
+$ocfDataDir = ocf_check_dir();
+list($repOk, $repDetail) = ocf_check_json_writable($ocfDataDir . '/ocr-fusion/reputation.json');
+$details[] = array('label' => '字段级信誉文件', 'ok' => $repOk, 'detail' => $repDetail);
+list($calOk, $calDetail) = ocf_check_json_writable($ocfDataDir . '/ocr-fusion/calibration.json');
+$details[] = array('label' => '校准参数文件', 'ok' => $calOk, 'detail' => $calDetail);
+
+$bridgeFile = dirname(__DIR__) . '/handwriting-lexicon/lib/bridge.php';
+$bridgeOk = is_file($bridgeFile);
+$details[] = array(
+    'label' => '字库连接层',
+    'ok' => $bridgeOk,
+    'detail' => $bridgeOk ? 'bridge.php 已就绪（缺失时自动降级为未命中，不阻断识别）' : '未找到 bridge.php，L2 字库联动将降级',
+);
+
+$goldenFile = __DIR__ . '/tests/golden/manifest.json';
+$goldenOk = is_file($goldenFile);
+$details[] = array(
+    'label' => '黄金样本集',
+    'ok' => $goldenOk,
+    'detail' => $goldenOk ? 'manifest.json 已就绪，可用 tools/eval.php 评估' : '未找到 tests/golden/manifest.json',
+);
+
+$traceDir = $ocfDataDir . '/ocr-logs';
+$traceWritable = is_dir($traceDir) ? is_writable($traceDir) : is_writable(dirname($traceDir));
+$details[] = array(
+    'label' => '裁决链路 trace',
+    'ok' => $traceWritable,
+    'detail' => $traceWritable ? 'fusion-trace 可写入（旁路 JSONL，invokeId 关联主日志）' : 'ocr-logs 目录不可写，trace 将跳过',
+);
+
 $ok = $usable >= 1 && $agreeOk && $minOk;
 if ($usable < 2) {
     $details[] = array(

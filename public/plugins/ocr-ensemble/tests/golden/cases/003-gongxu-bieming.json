@@ -1,0 +1,35 @@
+{
+  "image_ref": "gold/工序别名-003.jpg",
+  "tags": ["工序别名"],
+  "expect": {
+    "date": "2026-11-22",
+    "worker": "王强",
+    "workshop": "三车间",
+    "partNo": "523R301",
+    "process": "铣",
+    "qty": 80
+  },
+  "base": {
+    "date": "2026-11-22",
+    "worker": "王强",
+    "workshop": "三车间",
+    "partNo": "523R301",
+    "process": "铣加工",
+    "qty": 80
+  },
+  "ocf": {
+    "date": "2026-11-22",
+    "worker": "王强",
+    "workshop": "三车间",
+    "partNo": "523R301",
+    "process": "铣",
+    "qty": 80,
+    "confidence": 0.91,
+    "decision": "accept",
+    "rule": "L2_LEX_AUTO",
+    "trace": {"L1": {"process": "weak"}, "L2": {"process": "auto:process_synonym"}}
+  },
+  "correct": true,
+  "confidence": 0.91,
+  "agreement": 0.85
+}

@@ -1,0 +1,35 @@
+{
+  "image_ref": "gold/正常-005.jpg",
+  "tags": ["正常"],
+  "expect": {
+    "date": "2026-11-20",
+    "worker": "陈静",
+    "workshop": "二车间",
+    "partNo": "TD24510R04",
+    "process": "磨",
+    "qty": 200
+  },
+  "base": {
+    "date": "2026-11-20",
+    "worker": "陈静",
+    "workshop": "二车间",
+    "partNo": "TD24510R04",
+    "process": "磨",
+    "qty": 200
+  },
+  "ocf": {
+    "date": "2026-11-20",
+    "worker": "陈静",
+    "workshop": "二车间",
+    "partNo": "TD24510R04",
+    "process": "磨",
+    "qty": 200,
+    "confidence": 0.98,
+    "decision": "accept",
+    "rule": "MAJORITY_WEIGHTED",
+    "trace": {"L3": {"share": 0.98}, "L4": {"needReview": false}}
+  },
+  "correct": true,
+  "confidence": 0.98,
+  "agreement": 0.97
+}

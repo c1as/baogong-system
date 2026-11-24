@@ -1,0 +1,35 @@
+{
+  "image_ref": "gold/数量粘连-004.jpg",
+  "tags": ["数量粘连"],
+  "expect": {
+    "date": "2026-11-21",
+    "worker": "赵敏",
+    "workshop": "一车间",
+    "partNo": "90535R183",
+    "process": "钻",
+    "qty": 50
+  },
+  "base": {
+    "date": "2026-11-21",
+    "worker": "赵敏",
+    "workshop": "一车间",
+    "partNo": "90535R183",
+    "process": "钻",
+    "qty": 150
+  },
+  "ocf": {
+    "date": "2026-11-21",
+    "worker": "赵敏",
+    "workshop": "一车间",
+    "partNo": "90535R183",
+    "process": "钻",
+    "qty": 50,
+    "confidence": 0.89,
+    "decision": "accept",
+    "rule": "MAJORITY_WEIGHTED",
+    "trace": {"L1": {"qty": "rejected:150"}, "L3": {"qty": "median=50"}}
+  },
+  "correct": true,
+  "confidence": 0.89,
+  "agreement": 0.8
+}

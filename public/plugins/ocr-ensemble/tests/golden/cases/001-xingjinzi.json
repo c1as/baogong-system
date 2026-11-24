@@ -1,0 +1,35 @@
+{
+  "image_ref": "gold/形近字-001.jpg",
+  "tags": ["形近字"],
+  "expect": {
+    "date": "2026-11-24",
+    "worker": "张伟",
+    "workshop": "一车间",
+    "partNo": "24971b05",
+    "process": "钻孔",
+    "qty": 50
+  },
+  "base": {
+    "date": "2026-11-24",
+    "worker": "张伟",
+    "workshop": "一车间",
+    "partNo": "24971b05",
+    "process": "铣2",
+    "qty": 50
+  },
+  "ocf": {
+    "date": "2026-11-24",
+    "worker": "张伟",
+    "workshop": "一车间",
+    "partNo": "24971b05",
+    "process": "钻孔",
+    "qty": 50,
+    "confidence": 0.94,
+    "decision": "accept",
+    "rule": "MAJORITY_WEIGHTED",
+    "trace": {"L1": {"partNo": "supported"}, "L2": {"process": "auto:process_synonym"}}
+  },
+  "correct": true,
+  "confidence": 0.94,
+  "agreement": 0.88
+}
