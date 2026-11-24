@@ -3461,131 +3461,164 @@ svg {
   }
 }
 
-/* ------------------------------------------------------------------ 右上角设置菜单 */
-.topbar .actions {
-  margin-left: auto;
-}
+/* ==================================================================== 插件市场（v1.1） */
 
-.settings-wrap {
-  position: relative;
-  flex: none;
+.nav-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  margin-left: 8px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
 }
+.nav-badge[hidden] { display: none; }
 
-.settings-btn {
-  width: 40px;
-  height: 40px;
-  border: 1px solid var(--line);
-  background: #fff;
+.mk-loading {
+  padding: 60px 20px;
+  text-align: center;
   color: var(--muted);
 }
 
-.settings-btn:hover {
-  color: var(--ink);
-  background: #f6f8fc;
-}
-
-.settings-menu {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 6px);
-  min-width: 190px;
-  padding: 6px;
-  background: #fff;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  box-shadow: 0 14px 34px rgba(16, 24, 40, 0.14);
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  z-index: 70;
-}
-
-.settings-menu[hidden] {
-  display: none;
-}
-
-.settings-menu button,
-.settings-menu a {
+.mk-source {
   display: flex;
   align-items: center;
-  gap: 9px;
-  width: 100%;
-  padding: 10px;
-  border: none;
-  background: none;
-  border-radius: 8px;
-  color: var(--ink);
-  font-size: 13px;
-  text-align: left;
-  text-decoration: none;
-  cursor: pointer;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  margin-bottom: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
 }
-
-.settings-menu button:hover,
-.settings-menu a:hover {
-  background: #f6f8fc;
-}
-
-.settings-ver {
-  margin-top: 4px;
-  padding: 8px 10px 4px;
-  border-top: 1px solid var(--line);
-  font-size: 10.5px;
-  color: #b6c0cf;
-}
-
-@media (max-width: 880px) {
-  /* 手机端：标题与齿轮同一行，操作按钮独占下一行 */
-  .topbar {
-    flex-direction: row;
-    flex-wrap: wrap;
-    align-items: flex-start;
-    gap: 10px 12px;
-  }
-
-  .topbar > div:first-child {
-    order: 1;
-    flex: 1 1 auto;
-    min-width: 0;
-  }
-
-  .topbar .settings-wrap {
-    order: 2;
-    margin-left: auto;
-  }
-
-  .topbar .actions {
-    order: 3;
-    flex: 1 1 100%;
-    width: 100%;
-    margin-left: 0;
-    justify-content: flex-start;
-  }
-
-  .settings-menu {
-    min-width: 176px;
-  }
-}
-
-/* ------------------------------------------------------------------ 内置 PDF 查看器 */
-.pdf-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 900;
-  background: #eef1f6;
-}
-
-.pdf-overlay[hidden] {
-  display: none;
-}
-
-.pdf-overlay iframe {
-  width: 100%;
-  height: 100%;
-  border: none;
-  display: block;
-}
-
-body.pdf-open {
+.mk-source-info { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.mk-source-name { font-weight: 650; color: var(--ink); }
+.mk-source-url {
+  font-size: 12px;
+  color: var(--muted);
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 70vw;
+}
+.mk-meta { font-size: 11.5px; color: var(--faint); white-space: nowrap; }
+
+.mk-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.mk-tab {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-2);
+  border-radius: 999px;
+  padding: 7px 15px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all .15s;
+}
+.mk-tab em {
+  font-style: normal;
+  color: var(--muted);
+  margin-left: 3px;
+}
+.mk-tab.active {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #fff;
+}
+.mk-tab.active em { color: rgba(255,255,255,.85); }
+
+.mk-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  padding: 16px 18px;
+  margin-bottom: 12px;
+}
+.mk-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.mk-card-title { display: flex; flex-direction: column; gap: 2px; }
+.mk-card-title strong { font-size: 15px; color: var(--ink); }
+.mk-card-title code { font-size: 11.5px; color: var(--faint); }
+.mk-chip {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  background: var(--brand-weak);
+  color: var(--brand);
+  white-space: nowrap;
+}
+.mk-chip.ok { background: #e7f7ef; color: var(--ok); }
+.mk-chip.warn { background: #fff3e0; color: #c2690a; }
+.mk-chip.muted { background: var(--line-2); color: var(--muted); }
+.mk-desc { color: var(--ink-2); margin: 10px 0 8px; font-size: 13px; line-height: 1.6; }
+.mk-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.mk-caps { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.mk-cap {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--line-2);
+  color: var(--muted);
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.mk-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; align-items: center; }
+.mk-hint { font-size: 12px; color: var(--faint); }
+
+.mk-detail p { color: var(--ink-2); line-height: 1.6; }
+.mk-detail h4 { margin: 18px 0 8px; font-size: 13px; color: var(--ink); }
+.mk-detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 16px;
+  padding: 14px;
+  background: var(--line-2);
+  border-radius: 10px;
+}
+.mk-detail-grid > div { display: flex; flex-direction: column; gap: 3px; font-size: 13px; color: var(--ink-2); }
+.mk-detail-grid > div > span:first-child { font-size: 11px; color: var(--faint); }
+.mk-detail small { color: var(--muted); font-weight: 400; }
+.mk-changelog { white-space: pre-wrap; }
+.mk-setting {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line-2);
+  font-size: 13px;
+}
+.mk-setting strong { min-width: 90px; }
+.mk-setting code { color: var(--brand); font-size: 11.5px; }
+.mk-setting span { margin-left: auto; color: var(--faint); font-size: 11.5px; }
+
+.mk-source-form { display: flex; flex-direction: column; gap: 14px; margin: 8px 0 4px; }
+.mk-source-form label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--ink-2); font-weight: 600; }
+
+@media (max-width: 640px) {
+  .mk-source { flex-direction: column; align-items: flex-start; }
+  .mk-detail-grid { grid-template-columns: 1fr; }
 }
