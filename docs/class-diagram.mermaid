@@ -1,5 +1,7 @@
 %% 报工系统 · 插件市场 —— 类图
-%% 来源：docs/插件市场-架构设计.md §A.3.1
+%% 来源：docs/插件市场-架构设计.md §A.3.1（v1.1 增量修订：双目录策略）
+%% v1.1 变更：builtinPluginsDir = public/plugins（必备只读，随 web 包覆盖，不排除）；marketPluginsDir = data/market-plugins（市场唯一写根，App 热更天然零覆盖）
+%% v1.1 变更：PluginInstaller 拆出双目录常量；新增 PluginScanner（合并扫描、同名 market 优先）；LocalPlugin.source 标记 builtin/market
 classDiagram
     class SourceConfig {
         -string file
@@ -35,12 +37,19 @@ classDiagram
         +rejectSlip(entryName string) bool
     }
     class PluginInstaller {
-        -string pluginsDir
+        -string builtinPluginsDir
+        -string marketPluginsDir
         +install(id string, ver string) array
         +upgrade(id string, ver string) array
         +uninstall(id string) bool
         +rollback(id string) bool
         +assertSafePath(path string) bool
+    }
+    class PluginScanner {
+        -string builtinDir
+        -string marketDir
+        +scanAll() LocalPlugin[]
+        +mergeById(builtin LocalPlugin[], market LocalPlugin[]) LocalPlugin[]
     }
     class MarketController {
         +sourceGet() array
@@ -80,19 +89,22 @@ classDiagram
         +string id
         +string version
         +string dir
+        +string source
         +bool enabled
         +array settings
     }
 
     MarketController --> SourceConfig : 读写来源配置
     MarketController --> IndexClient : 拉取索引
+    MarketController --> PluginScanner : 合并扫描（带来源标记）
     MarketController --> PluginInstaller : 执行安装/升级/卸载
     MarketController --> VersionUtil : 判定状态
     IndexClient --> SourceConfig : 取 URL 与令牌
     IndexClient --> PluginIndex : 解析为
+    PluginScanner --> LocalPlugin : 产出(builtin/market)
     PluginInstaller --> PackageFetcher : 下载 zip
     PluginInstaller --> ZipInspector : 校验并解压
-    PluginInstaller --> LocalPlugin : 原子替换目录
+    PluginInstaller --> LocalPlugin : 仅替换 market 副本
     PluginInstaller --> VersionUtil : 版本校验
     PluginIndex "1" *-- "n" IndexEntry
     IndexEntry "1" *-- "1" PackageInfo
