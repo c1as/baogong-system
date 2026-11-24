@@ -1,0 +1,200 @@
+name: Plugin Release
+
+# 插件发布流水线（设计依据：docs/打包工作流文档.md v1.1 §4）
+# 触发：推送 plugin-<id>-vX.Y.Z tag；web-v* 系统热更 tag 不会触发。
+# 流程：校验 tag/祖先链/清单 → 打包 zip + sha256 → 建 Release 上传 → 取 asset id → upsert plugins-index.json → 提交回 plugin 分支。
+# 双目录策略：打包源是 public/plugins/<id>/（必备基线，只读）；市场安装落盘 data/market-plugins/（本流水线不涉及）。
+
+on:
+  push:
+    tags:
+      - 'plugin-*-v*.*.*'
+
+permissions:
+  contents: write   # 建 Release + 上传资产 + 推送索引提交
+
+concurrency:
+  group: plugin-release          # 串行发布，避免索引提交冲突
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      # 默认检出 $GITHUB_SHA（tag 指向的提交），不指定 ref；fetch-depth:0 供祖先链校验。
+      - name: 检出 tag 提交（含完整历史）
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: ① 校验 tag 格式并解析 id/version
+        id: meta
+        run: |
+          set -e
+          TAG="${GITHUB_REF_NAME}"
+          echo "tag=$TAG"
+          [[ "$TAG" =~ ^plugin-([a-z0-9][a-z0-9-]{0,31})-v([0-9]+\.[0-9]+\.[0-9]+)$ ]] \
+            || { echo "tag 格式非法，应为 plugin-<id>-vX.Y.Z"; exit 1; }
+          ID="${BASH_REMATCH[1]}"
+          VER="${BASH_REMATCH[2]}"
+          echo "id=$ID"; echo "version=$VER"
+          echo "id=$ID" >> "$GITHUB_OUTPUT"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+
+      - name: ② 祖先链校验（tag 提交必须在 origin/plugin 上）
+        run: |
+          set -e
+          git fetch origin plugin
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/plugin \
+            || { echo "tag 提交不在 origin/plugin 祖先链上，拒绝发布"; exit 1; }
+          echo "祖先链校验通过"
+
+      - name: ③ 清单校验（plugin.json）
+        id: manifest
+        run: |
+          set -e
+          ID="${{ steps.meta.outputs.id }}"
+          VER="${{ steps.meta.outputs.version }}"
+          PJ="public/plugins/${ID}/plugin.json"
+          [ -f "$PJ" ] || { echo "缺少 $PJ"; exit 1; }
+          jq -e . "$PJ" >/dev/null || { echo "plugin.json 非法"; exit 1; }
+          [ "$(jq -r .id "$PJ")" = "$ID" ] || { echo "plugin.json 的 id 与 tag 不一致"; exit 1; }
+          [ "$(jq -r .version "$PJ")" = "$VER" ] || { echo "plugin.json 的 version 与 tag 不一致"; exit 1; }
+          ENTRY=$(jq -r '.entry // "handler.php"' "$PJ")
+          [ -f "public/plugins/${ID}/${ENTRY}" ] || { echo "entry 文件不存在: $ENTRY"; exit 1; }
+          BAD=$(jq -r '.capabilities // [] | map(select(. != "report.ocr" and . != "report.ocr.fusion" and . != "report.ocr.log")) | join(",")' "$PJ")
+          [ -z "$BAD" ] || { echo "非法能力标签: $BAD"; exit 1; }
+          echo "清单校验通过"
+          # 供步骤④生成索引条目时复用原始 plugin.json 路径
+          echo "pj=$PJ" >> "$GITHUB_OUTPUT"
+
+      - name: ④ 版本递增校验（索引中同 id 版本不得 >= 本次版本）
+        run: |
+          set -e
+          ID="${{ steps.meta.outputs.id }}"
+          VER="${{ steps.meta.outputs.version }}"
+          [ -f plugins-index.json ] || { echo "索引不存在，视为首次发布"; exit 0; }
+          OLD=$(jq -r --arg id "$ID" '.plugins[]? | select(.id==$id) | .version' plugins-index.json 2>/dev/null || true)
+          [ -z "$OLD" ] && { echo "该 id 首次入库"; exit 0; }
+          # 语义化版本比较（简版：逐段数值比较）
+          ver_ge() {  # $1 >= $2 返回 0
+            local a="$1" b="$2" pa pb i
+            a="${a#v}"; b="${b#v}"
+            IFS=. read -ra pa <<< "$a"; IFS=. read -ra pb <<< "$b"
+            for i in 0 1 2; do
+              local x="${pa[$i]:-0}" y="${pb[$i]:-0}"
+              x="${x%%[-+]*}"; y="${y%%[-+]*}"
+              [ "$x" -gt "$y" ] 2>/dev/null && return 0
+              [ "$x" -lt "$y" ] 2>/dev/null && return 1
+            done
+            return 0
+          }
+          if ver_ge "$OLD" "$VER"; then
+            echo "目标版本 $VER 未高于索引中现有版本 $OLD，拒绝发布"; exit 1
+          fi
+          echo "版本递增校验通过（$OLD -> $VER）"
+
+      - name: ⑤ zip 打包 + sha256/size
+        id: pkg
+        run: |
+          set -e
+          ID="${{ steps.meta.outputs.id }}"
+          VER="${{ steps.meta.outputs.version }}"
+          ZIP="plugin-${ID}-v${VER}.zip"
+          ( cd "public/plugins/${ID}" && \
+            zip -r -9 "../../../${ZIP}" . -x '.*' '*/.*' 'data/*' '*.log' )
+          SIZE=$(stat -c %s "$ZIP")
+          [ "$SIZE" -le 5242880 ] || { echo "包超过 5MB: $SIZE"; exit 1; }
+          SHA=$(sha256sum "$ZIP" | awk '{print $1}')
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+          echo "size=$SIZE" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "产物 $ZIP ($SIZE bytes, sha256=$SHA)"
+
+      - name: ⑥ 建 Release 上传 zip
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "插件 ${{ steps.meta.outputs.id }} v${{ steps.meta.outputs.version }}"
+          files: ${{ steps.pkg.outputs.zip }}
+          body: "插件包由 CI 自动生成，索引已同步更新。"
+
+      - name: ⑦ 取 asset id
+        id: asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          TAG="${GITHUB_REF_NAME}"
+          ZIP="${{ steps.pkg.outputs.zip }}"
+          AID=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" \
+                 --jq ".assets[] | select(.name==\"${ZIP}\") | .id")
+          [ -n "$AID" ] || { echo "未找到资产 $ZIP"; exit 1; }
+          echo "id=$AID" >> "$GITHUB_OUTPUT"
+          echo "asset_id=$AID"
+
+      - name: ⑧ upsert 索引条目（首次建骨架 + 合并展示字段 + 按 id 去旧增新）
+        env:
+          ID: ${{ steps.meta.outputs.id }}
+          VER: ${{ steps.meta.outputs.version }}
+          AID: ${{ steps.asset.outputs.id }}
+          SHA: ${{ steps.pkg.outputs.sha }}
+          SIZE: ${{ steps.pkg.outputs.size }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -e
+          ZIP="plugin-${ID}-v${VER}.zip"
+          PJ="public/plugins/${ID}/plugin.json"
+          NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          # 从 plugin.json 同步展示字段，叠加 CI 生成字段（tag/releasedAt/package.*）
+          ENTRY=$(jq -n \
+            --slurpfile pj "$PJ" \
+            --arg id "$ID" --arg ver "$VER" --arg zip "$ZIP" \
+            --arg url "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/assets/${AID}" \
+            --arg sha "$SHA" --argjson size "$SIZE" --arg tag "$TAG" --arg now "$NOW" \
+            '($pj[0]
+              | {name, version, description, author, capabilities, entry, check, defaultEnabled, settings, changelog, minSystemVersion}
+              | with_entries(select(.value != null)))
+             + {id:$id, version:$ver, tag:$tag, releasedAt:$now,
+                package:{name:$zip, url:$url, sha256:$sha, size:$size}}')
+
+          # 首次发布若索引不存在，创建骨架（schema/generatedAt/source/空 plugins）
+          if [ ! -f plugins-index.json ]; then
+            jq -n --arg now "$NOW" --arg repo "$GITHUB_REPOSITORY" \
+              '{schema:"baogong-plugin-index/1", generatedAt:$now,
+                source:{repo:$repo, branch:"plugin", tagPattern:"plugin-<id>-vX.Y.Z"},
+                plugins:[]}' > plugins-index.json
+          fi
+
+          jq --arg id "$ID" --argjson e "$ENTRY" --arg now "$NOW" \
+            '.generatedAt = $now
+             | .plugins = ( [ .plugins[] | select(.id != $id) ] + [ $e ] )' \
+            plugins-index.json > plugins-index.json.tmp
+          mv plugins-index.json.tmp plugins-index.json
+          echo "索引已更新：$(jq -r '.plugins | length' plugins-index.json) 个条目"
+
+      - name: ⑨ 提交索引回 plugin 分支（带 rebase 重试）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add plugins-index.json
+          git diff --staged --quiet && { echo "索引无变化"; exit 0; }
+          git commit -m "chore: 更新插件索引（${{ github.ref_name }}）"
+          # plugin 分支可能在 tag 之后有新提交，先 rebase 再推送；失败重试一次
+          for attempt in 1 2 3; do
+            git fetch origin plugin
+            if git rebase origin/plugin; then
+              if git push origin HEAD:plugin; then
+                echo "索引已推送到 plugin 分支"; exit 0
+              fi
+            else
+              git rebase --abort || true
+            fi
+            echo "第 $attempt 次推送冲突，重试…"
+            sleep 2
+          done
+          echo "索引提交推送失败，需人工处理"; exit 1
