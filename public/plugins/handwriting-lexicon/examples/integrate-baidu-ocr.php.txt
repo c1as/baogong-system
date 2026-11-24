@@ -1,0 +1,157 @@
+<?php
+/*
+ * 百度 OCR 参考改造片段（本次唯一实际落地的插件）
+ * 目标文件：public/plugins/baidu-ocr/handler.php
+ *
+ * 说明：以下为「需要新增的代码」，标注了插入位置。
+ * 所有调用都包在 function_exists 与 try/catch 中，词库缺失时零影响。
+ */
+
+/* ========== 插入点 0：原第 22 行 require_once __DIR__ . '/lib.php'; 之后 ========== */
+
+/* 手写字词库：可选依赖，缺失或加载失败时静默降级为原识别逻辑 */
+$bglxCandidates = array(
+    dirname(__DIR__) . '/handwriting-lexicon/lib/lexicon.php',
+    dirname(__DIR__, 2) . '/public/plugins/handwriting-lexicon/lib/lexicon.php',
+);
+foreach ($bglxCandidates as $bglxFile) {
+    if (is_file($bglxFile)) {
+        try {
+            require_once $bglxFile;
+        } catch (Throwable $bglxE) {
+            error_log('[handwriting-lexicon] 引入失败：' . $bglxE->getMessage());
+        }
+        break;
+    }
+}
+$GLOBALS['BG_BGLX_WARNINGS'] = array();
+
+/**
+ * 收集词库 suggest 档提示，最后统一并入 $warnings（不改动任何函数签名）。
+ *
+ * @param array $r 词库查询结果
+ * @param string $fieldName 字段名，用于提示文案
+ */
+function bg_baidu_lexicon_collect($r, $fieldName)
+{
+    if (!isset($r['action']) || $r['action'] !== 'suggest') {
+        return;
+    }
+    $text = $fieldName . '「' . $r['original'] . '」疑似「' . $r['corrected'] . '」，请人工确认';
+    if (!in_array($text, $GLOBALS['BG_BGLX_WARNINGS'], true)) {
+        $GLOBALS['BG_BGLX_WARNINGS'][] = $text;
+    }
+}
+
+/* ========== 插入点 ①：bg_baidu_norm() 函数定义之后（原第 131~136 行后） ========== */
+
+/**
+ * 图号两级纠错（字符形近归一 → 词条匹配）。
+ * 未命中 / 词库不可用 / 非 auto 时原样返回。
+ *
+ * @param string $raw 原始图号或包含图号的文本
+ * @return string
+ */
+function bg_baidu_lexicon_partno($raw)
+{
+    $raw = (string)$raw;
+    if ($raw === '' || !function_exists('bglx_correct_partno')) {
+        return $raw;
+    }
+    try {
+        $r = bglx_correct_partno($raw, array('plugin' => 'baidu-ocr'));
+        if (isset($r['action']) && $r['action'] === 'auto') {
+            return (string)$r['corrected'];
+        }
+        bg_baidu_lexicon_collect($r, '图号');
+        return $raw;
+    } catch (Throwable $bglxE) {
+        return $raw;
+    }
+}
+
+/**
+ * 工序词纠错（process_synonym）。suggest 档保留原值并收集提示。
+ *
+ * @param string $raw 原始工序词
+ * @return string
+ */
+function bg_baidu_lexicon_process($raw)
+{
+    $raw = (string)$raw;
+    if ($raw === '' || !function_exists('bglx_norm_process')) {
+        return $raw;
+    }
+    try {
+        $r = bglx_norm_process($raw, array('plugin' => 'baidu-ocr'));
+        if (isset($r['action']) && $r['action'] === 'auto') {
+            return (string)$r['corrected'];
+        }
+        bg_baidu_lexicon_collect($r, '工序');
+        return $raw;
+    } catch (Throwable $bglxE) {
+        return $raw;
+    }
+}
+
+/**
+ * 单位词纠错（unit_synonym）。
+ *
+ * @param string $unit 原始单位
+ * @return string
+ */
+function bg_baidu_lexicon_unit($unit)
+{
+    $unit = (string)$unit;
+    if ($unit === '' || !function_exists('bglx_norm_unit')) {
+        return $unit;
+    }
+    try {
+        $r = bglx_norm_unit($unit, array('plugin' => 'baidu-ocr'));
+        if (isset($r['action']) && $r['action'] === 'auto') {
+            return (string)$r['corrected'];
+        }
+        return $unit; // 单位多为 suggest 档，不提示以免噪声
+    } catch (Throwable $bglxE) {
+        return $unit;
+    }
+}
+
+/* ========== 插入点 ②：bg_baidu_match_part() 函数入口 ========== */
+
+function bg_baidu_match_part($line, $norm, $catalog)
+{
+    /* 手写字词库：先把行内图号归一（如 2L59711305 → 24971b05），再走原有匹配 */
+    $line = bg_baidu_lexicon_partno($line);
+    $norm = bg_baidu_norm($line);
+
+    /* ……以下保持原有匹配逻辑完全不变…… */
+}
+
+/* ========== 插入点 ③：bg_baidu_match_process() 函数入口 ========== */
+
+function bg_baidu_match_process($lineNorm, $procs)
+{
+    /* 手写字词库：行内工序词归一（铣2 → 钻孔），再走原有包含匹配 */
+    $lineNorm = bg_baidu_lexicon_process($lineNorm);
+
+    /* ……以下保持原有匹配逻辑完全不变…… */
+}
+
+/* ========== 插入点 ④：bg_baidu_qty() 中解析出 $unit 之后 ========== */
+
+$unit = isset($m[2]) ? (string)$m[2] : '';
+$unit = bg_baidu_lexicon_unit($unit); // 手写字词库：单位归一
+
+/* ========== 插入点 ⑤：return array(...) 之前，合并 suggest 提示 ========== */
+
+if (!empty($GLOBALS['BG_BGLX_WARNINGS'])) {
+    foreach ($GLOBALS['BG_BGLX_WARNINGS'] as $bglxWarn) {
+        if (count($warnings) >= 5) {
+            break;
+        }
+        if (!in_array($bglxWarn, $warnings, true)) {
+            $warnings[] = $bglxWarn;
+        }
+    }
+}

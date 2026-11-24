@@ -1,0 +1,87 @@
+<?php
+/*
+ * MiMo v2.6 Flash 改造片段（本次仅提供文档，不在本次落地）
+ * 目标文件：fixed-plugins/mimo-v26-flash/handler.php
+ * 前缀：mimoocr_*
+ */
+
+/* ========== 插入点 0：require_once __DIR__ . '/shared.php'; 之后 ========== */
+
+$bglxCandidates = array(
+    dirname(__DIR__) . '/handwriting-lexicon/lib/lexicon.php',
+    dirname(__DIR__, 2) . '/public/plugins/handwriting-lexicon/lib/lexicon.php',
+);
+foreach ($bglxCandidates as $bglxFile) {
+    if (is_file($bglxFile)) {
+        try {
+            require_once $bglxFile;
+        } catch (Throwable $bglxE) {
+            error_log('[handwriting-lexicon] 引入失败：' . $bglxE->getMessage());
+        }
+        break;
+    }
+}
+
+/**
+ * 遍历并纠正 $fields['items'] 中每条明细；auto 替换，suggest 追加 warnings。
+ *
+ * @param array $fields  返回值（引用）
+ * @param array $warnings 警告数组（引用）
+ */
+function mimoocr_lexicon_fields(&$fields, &$warnings)
+{
+    if (!isset($fields['items']) || !is_array($fields['items'])) {
+        return;
+    }
+    $opts = array('plugin' => 'mimo-v26-flash');
+    foreach ($fields['items'] as $idx => $item) {
+        if (!is_array($item)) {
+            continue;
+        }
+        if (!empty($item['partNo']) && function_exists('bglx_correct_partno')) {
+            try {
+                $r = bglx_correct_partno($item['partNo'], $opts);
+                if (isset($r['action']) && $r['action'] === 'auto') {
+                    $fields['items'][$idx]['partNo'] = (string)$r['corrected'];
+                } elseif (isset($r['action']) && $r['action'] === 'suggest') {
+                    $warnings[] = '图号「' . $r['original'] . '」疑似「' . $r['corrected'] . '」，请人工确认';
+                }
+            } catch (Throwable $bglxE) {
+                // 保持原值
+            }
+        }
+        if (!empty($item['process']) && function_exists('bglx_norm_process')) {
+            try {
+                $r = bglx_norm_process($item['process'], $opts);
+                if (isset($r['action']) && $r['action'] === 'auto') {
+                    $fields['items'][$idx]['process'] = (string)$r['corrected'];
+                } elseif (isset($r['action']) && $r['action'] === 'suggest') {
+                    $warnings[] = '工序「' . $r['original'] . '」疑似「' . $r['corrected'] . '」，请人工确认';
+                }
+            } catch (Throwable $bglxE) {
+                // 保持原值
+            }
+        }
+        if (!empty($item['unit']) && function_exists('bglx_norm_unit')) {
+            try {
+                $r = bglx_norm_unit($item['unit'], $opts);
+                if (isset($r['action']) && $r['action'] === 'auto') {
+                    $fields['items'][$idx]['unit'] = (string)$r['corrected'];
+                }
+            } catch (Throwable $bglxE) {
+                // 保持原值
+            }
+        }
+    }
+}
+
+/* ========== 插入点 ①：$fields 组装完成后、return 之前 ========== */
+
+mimoocr_lexicon_fields($fields, $warnings);
+
+/* ========== 插入点 ②：mimoocr_fallback() 兜底分支返回前 ========== */
+
+if (function_exists('mimoocr_fallback')) {
+    // 在 mimoocr_fallback() 内部组装 $fields 后同样调用：
+    // mimoocr_lexicon_fields($fields, $warnings);
+}

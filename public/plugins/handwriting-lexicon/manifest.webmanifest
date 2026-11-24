@@ -1,0 +1,20 @@
+{
+  "name": "手写字词库管理",
+  "short_name": "手写词库",
+  "description": "统一维护手写报工单识别词库，供全部 OCR 插件共享",
+  "start_url": "admin.php",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f5f7fa",
+  "theme_color": "#2563eb",
+  "lang": "zh-CN",
+  "icons": [
+    {
+      "src": "assets/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

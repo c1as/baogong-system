@@ -1,0 +1,1 @@
+{"invoke_id":"20260601103012-ocrfusion-a1b2","fields":[{"name":"partNo","value":"A-123","stages":[{"engine":"baidu-ocr","value":"A-123","confidence":0.88}],"candidates":[{"value":"AS-1234","confidence":0.51}],"evidence":"图号区域笔画断续"}],"warnings":[]}

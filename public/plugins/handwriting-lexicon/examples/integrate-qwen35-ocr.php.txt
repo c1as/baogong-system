@@ -1,0 +1,87 @@
+<?php
+/*
+ * 通义千问 Qwen3.5-OCR 改造片段（本次仅提供文档，不在本次落地）
+ * 目标文件：fixed-plugins/qwen35-ocr/handler.php
+ * 前缀：qwenocr_*
+ *
+ * 关键：词库纠错只影响 partNo / process / unit 的文本值，
+ *       不改写 $confidence（它是模型对整单识别的置信度，语义不同）。
+ */
+
+/* ========== 插入点 0：require_once __DIR__ . '/shared.php'; 之后 ========== */
+
+$bglxCandidates = array(
+    dirname(__DIR__) . '/handwriting-lexicon/lib/lexicon.php',
+    dirname(__DIR__, 2) . '/public/plugins/handwriting-lexicon/lib/lexicon.php',
+);
+foreach ($bglxCandidates as $bglxFile) {
+    if (is_file($bglxFile)) {
+        try {
+            require_once $bglxFile;
+        } catch (Throwable $bglxE) {
+            error_log('[handwriting-lexicon] 引入失败：' . $bglxE->getMessage());
+        }
+        break;
+    }
+}
+
+/**
+ * 对一条 items 记录做词库后处理；auto 替换，suggest 仅追加警告。
+ *
+ * @param array $item     明细行（引用）
+ * @param array $warnings 警告数组（引用）
+ */
+function qwenocr_lexicon_item(&$item, &$warnings)
+{
+    $opts = array('plugin' => 'qwen35-ocr');
+
+    if (function_exists('bglx_correct_partno') && !empty($item['partNo'])) {
+        try {
+            $r = bglx_correct_partno($item['partNo'], $opts);
+            if (isset($r['action']) && $r['action'] === 'auto') {
+                $item['partNo'] = (string)$r['corrected'];
+            } elseif (isset($r['action']) && $r['action'] === 'suggest') {
+                $warnings[] = '图号「' . $r['original'] . '」疑似「' . $r['corrected'] . '」，请人工确认';
+            }
+        } catch (Throwable $bglxE) {
+            // 词库异常时保持原值
+        }
+    }
+
+    if (function_exists('bglx_norm_process') && !empty($item['process'])) {
+        try {
+            $r = bglx_norm_process($item['process'], $opts);
+            if (isset($r['action']) && $r['action'] === 'auto') {
+                $item['process'] = (string)$r['corrected'];
+            } elseif (isset($r['action']) && $r['action'] === 'suggest') {
+                $warnings[] = '工序「' . $r['original'] . '」疑似「' . $r['corrected'] . '」，请人工确认';
+            }
+        } catch (Throwable $bglxE) {
+            // 保持原值
+        }
+    }
+}
+
+/* ========== 插入点 ①：$items[] = array(...) 组装之后（原第 193~200 行后） ========== */
+
+foreach ($items as $idx => $it) {
+    qwenocr_lexicon_item($items[$idx], $warnings);
+}
+
+/* ========== 插入点 ②：qwenocr_qty() 之前，归一单位（若模型输出了单位字段） ========== */
+
+if (function_exists('bglx_norm_unit') && !empty($rawUnit)) {
+    try {
+        $r = bglx_norm_unit($rawUnit, array('plugin' => 'qwen35-ocr'));
+        if (isset($r['action']) && $r['action'] === 'auto') {
+            $rawUnit = (string)$r['corrected'];
+        }
+    } catch (Throwable $bglxE) {
+        // 保持原值
+    }
+}
+
+/* ========== 注意：不要改动以下置信度计算 ========== */
+
+$confidence = qwenocr_qty(qwenocr_field($parsed, array('confidence', '置信度')));
+// 保持原逻辑：词库纠错结果不参与 $confidence 计算

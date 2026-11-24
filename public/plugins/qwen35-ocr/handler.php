@@ -13,6 +13,13 @@ if (!isset($GLOBALS['BG_PLUGIN_CTX']) || !is_array($GLOBALS['BG_PLUGIN_CTX'])) {
 
 require_once __DIR__ . '/shared.php';
 
+/* 手写字词库连接层（唯一入口）：一行引入 + 一行初始化，失败静默降级为未命中 */
+$bglxBridgeFile = dirname(__DIR__) . '/handwriting-lexicon/lib/bridge.php';
+if (is_file($bglxBridgeFile)) {
+    require_once $bglxBridgeFile;
+    bglx_bridge_init('qwen35-ocr');
+}
+
 $ctx   = $GLOBALS['BG_PLUGIN_CTX'];
 $cfg   = (isset($ctx['config']) && is_array($ctx['config'])) ? $ctx['config'] : array();
 $today = (isset($ctx['today']) && preg_match('/^\d{4}-\d{2}-\d{2}$/', (string)$ctx['today']))
@@ -197,6 +204,17 @@ foreach ($raw_items as $row) {
         'qty'      => $qty,
         'price'    => $price,
     );
+}
+
+/* ---------- 5.5 字库连接层：批量归一明细字段（auto 生效，suggest 并入告警） ---------- */
+if (function_exists('bglx_bridge_norm_fields')) {
+    $bglxNorm = bglx_bridge_norm_fields(array('items' => $items), array('plugin' => 'qwen35-ocr'));
+    if (isset($bglxNorm['fields']['items']) && is_array($bglxNorm['fields']['items'])) {
+        $items = $bglxNorm['fields']['items'];
+    }
+    foreach (bglx_bridge_suggestions() as $sug) {
+        $warnings[] = '字库建议：' . $sug . '，请人工确认';
+    }
 }
 
 /* ---------- 6. 置信度与警告 ---------- */

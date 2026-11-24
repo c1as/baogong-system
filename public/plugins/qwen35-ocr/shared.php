@@ -348,6 +348,14 @@ function qwenocr_fallback($text, $catalog, $today) {
     if (preg_match('/(\d{4})\s*[-\/.年]\s*(\d{1,2})\s*[-\/.月]\s*(\d{1,2})/u', $text, $m)) {
         $res['date'] = qwenocr_date($m[0], $today);
     }
+    /* 无年份日期（如 11.22）：仅取带「日期」等 labelled 前缀或独立成行的月日，避免误把图号/数量当日期 */
+    if ($res['date'] === '') {
+        if (preg_match('/(?:日期|报工日期|填单日期|生产日期)\s*[:：]?\s*(\d{1,2})\s*[-\/.月]\s*(\d{1,2})\s*日?/u', $text, $m)
+            || preg_match('/(?<![\dA-Za-z])(\d{1,2})\s*[-.\/月]\s*(\d{1,2})\s*日?(?![\d\/.])/u', $text, $m)) {
+            $cand = sprintf('%02d-%02d', (int)$m[1], (int)$m[2]);
+            $res['date'] = qwenocr_date($cand, $today);
+        }
+    }
     /* 车间/报工人必须带冒号等显式分隔，避免把「车间报工单」这类标题当成车间名 */
     if (preg_match('/(报工人|报工员|记录人|操作员)\s*[:：]\s*([^\s,，、;：:]{1,12})/u', $text, $m)) {
         $res['worker'] = $m[2];

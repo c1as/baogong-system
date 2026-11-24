@@ -1,0 +1,229 @@
+{
+  "id": "handwriting-lexicon",
+  "name": "手写字词库管理",
+  "version": "1.1.0",
+  "description": "统一维护手写报工单识别中的图号别名、工序同义、单位同义与形近字符映射，供各 OCR 插件共享查询；并提供人工判断审查工作台，将纠错经人工确认后受控回流词库。",
+  "author": "报工系统",
+  "capabilities": ["lexicon.manage", "lexicon.review"],
+  "entry": "handler.php",
+  "check": "check.php",
+  "settings": [
+    {
+      "key": "adminToken",
+      "label": "管理页访问令牌",
+      "type": "password",
+      "placeholder": "建议 32 位以上随机字符串",
+      "hint": "管理页地址：/plugins/handwriting-lexicon/admin.php（请收藏）。留空时仅允许本机 127.0.0.1 / ::1 访问；也可用环境变量 BGLX_ADMIN_TOKEN 设置。"
+    },
+    {
+      "key": "adminUrl",
+      "label": "管理页地址（手机可添加到主屏幕一键进入）",
+      "type": "text",
+      "default": "/plugins/handwriting-lexicon/admin.php",
+      "hint": "手机浏览器打开此地址后，点菜单「添加到主屏幕」生成桌面图标，以后一键进入（设置页暂不支持可点击按钮，属主程序限制）。"
+    },
+    {
+      "key": "autoThreshold",
+      "label": "自动纠正阈值",
+      "type": "text",
+      "default": "0.90",
+      "placeholder": "0.90",
+      "hint": "命中置信度 ≥ 此值时 OCR 插件直接替换字段值。默认 0.90，建议不要低于 0.85；AI 候选上限 0.8 恒低于此值。"
+    },
+    {
+      "key": "suggestThreshold",
+      "label": "人工确认阈值",
+      "type": "text",
+      "default": "0.75",
+      "placeholder": "0.75",
+      "hint": "命中置信度 ≥ 此值但低于自动阈值时，仅提示人工核对，不自动替换。默认 0.75。"
+    },
+    {
+      "key": "trustedProxy",
+      "label": "可信反向代理 IP（逗号分隔，可选）",
+      "type": "text",
+      "default": "",
+      "placeholder": "留空表示不信任任何代理头",
+      "hint": "安全默认：留空时回环判定只看服务器直连地址 REMOTE_ADDR，伪造 X-Forwarded-For 无效。仅当确实部署在反向代理后，才填写代理服务器的 IP。"
+    },
+    {
+      "key": "lexiconFile",
+      "label": "词库文件绝对路径（可选）",
+      "type": "text",
+      "default": "",
+      "placeholder": "留空则使用 data/handwriting_lexicon.json",
+      "hint": "仅当部署环境把 data/ 放在非标准位置时需要填写；填写绝对路径可覆盖自动推导。"
+    },
+    {
+      "key": "reviewEnabled",
+      "label": "启用人工判断审查工作台",
+      "type": "checkbox",
+      "default": "0",
+      "hint": "总开关。关闭时管理页不显示审查入口，所有 review_* 接口统一返回 41001。审查数据存于独立的 data/handwriting_review.json，不影响 OCR 热路径。"
+    },
+    {
+      "key": "attachmentDirs",
+      "label": "识别图片附件目录（每行一个，顺序敏感）",
+      "type": "textarea",
+      "default": "images/attachments/",
+      "hint": "按顺序探测，首个存在且可读的目录胜出；相对路径相对 data 目录解析。主程序识别图片位于 data/images/attachments/，对应首行 images/attachments/。所有路径经 realpath 前缀校验，拒绝 .. 与符号链接越界。使用文本框而非多选，是为保证目录顺序与任意部署路径。"
+    },
+    {
+      "key": "attachmentExtensions",
+      "label": "允许的图片扩展名（逗号分隔）",
+      "type": "text",
+      "default": "jpg,jpeg,png,webp",
+      "hint": "扩展名白名单，另叠加 MIME 校验（仅 jpeg/png/webp），SVG 与 GIF 一律拒绝。"
+    },
+    {
+      "key": "attachmentMaxBytes",
+      "label": "单张图片大小上限（字节）",
+      "type": "number",
+      "default": "8388608",
+      "hint": "默认 8388608（8MB），超限文件跳过并在界面给出原因。"
+    },
+    {
+      "key": "thumbnailSize",
+      "label": "缩略图边长（像素）",
+      "type": "number",
+      "default": "320",
+      "hint": "按等比缩放并缓存到 data/review-thumbs/；未安装 GD 时自动降级直出原图。"
+    },
+    {
+      "key": "logDir",
+      "label": "识别日志目录",
+      "type": "text",
+      "default": "ocr-logs/",
+      "hint": "相对路径相对 data 目录解析，默认 ocr-logs/ 即 data/ocr-logs/。日志只以只读方式逐行流式解析，绝不写回原文件。"
+    },
+    {
+      "key": "logFilePattern",
+      "label": "主日志文件名规则",
+      "type": "text",
+      "default": "YYYY-MM-DD.jsonl",
+      "hint": "支持 YYYY-MM-DD / YYYYMMDD / YYYY / MM / DD 占位符替换。"
+    },
+    {
+      "key": "fusionTracePattern",
+      "label": "融合裁决 trace 文件名规则",
+      "type": "text",
+      "default": "fusion-trace-YYYY-MM-DD.jsonl",
+      "hint": "与主日志同目录；按 invokeId 建立哈希索引后展示字段级裁决链，无 trace 时优雅隐藏。"
+    },
+    {
+      "key": "fusionTraceEnabled",
+      "label": "读取并展示融合 trace",
+      "type": "checkbox",
+      "default": "1",
+      "hint": "关闭后列表不扫描 trace 文件，可减轻大日志目录压力。"
+    },
+    {
+      "key": "linkStrategy",
+      "label": "图片-日志关联策略",
+      "type": "select",
+      "default": "auto",
+      "options": ["auto", "invokeId", "filename", "mtime", "manual"],
+      "hint": "auto：invokeId(1.0/0.95) → 文件名 token(0.85) → mtime ±窗口(0.60)；manual 只认人工绑定。歧义时界面提示手动指定。"
+    },
+    {
+      "key": "linkTimeWindowSec",
+      "label": "时间窗口关联容差（秒）",
+      "type": "number",
+      "default": "300",
+      "hint": "mtime 与日志时间戳的允许偏差，默认 ±300 秒；最小差与次小差 < 30 秒判为歧义。"
+    },
+    {
+      "key": "aiEnabled",
+      "label": "启用 AI 纠错整理",
+      "type": "checkbox",
+      "default": "0",
+      "hint": "关闭后仅显示人工导入路径。AI 只做归纳，候选强制 pending 且必须人工勾选采纳，绝不直接入库。"
+    },
+    {
+      "key": "aiEndpoint",
+      "label": "AI 接口地址（OpenAI 兼容）",
+      "type": "text",
+      "default": "https://api.hunyuan.cloud.tencent.com/v1/chat/completions",
+      "hint": "默认混元 OpenAI 兼容端点，可切换其他兼容实现；仅服务端发起请求。"
+    },
+    {
+      "key": "aiKey",
+      "label": "AI Bearer Key（脱敏）",
+      "type": "password",
+      "default": "",
+      "hint": "仅在服务端读取；review_settings、自检与导出只返回 aiKeySet 布尔值，绝不回显明文。"
+    },
+    {
+      "key": "aiModel",
+      "label": "AI 模型名",
+      "type": "text",
+      "default": "hunyuan",
+      "hint": "随请求体提交给兼容端点的 model 字段。"
+    },
+    {
+      "key": "aiTimeoutSec",
+      "label": "AI 请求超时（秒）",
+      "type": "number",
+      "default": "30",
+      "hint": "超时按失败处理并降级为人工导入，闭环不中断。"
+    },
+    {
+      "key": "aiMaxCandidates",
+      "label": "单次 AI 整理候选上限",
+      "type": "number",
+      "default": "50",
+      "hint": "解析结果超过该条数时截断，防止异常响应占用过多资源。"
+    },
+    {
+      "key": "aiFallbackToManual",
+      "label": "AI 失败时降级为人工导入",
+      "type": "checkbox",
+      "default": "1",
+      "hint": "接口不可达、超时或解析无有效候选时，界面保留人工导入按钮并提示原因。"
+    },
+    {
+      "key": "autoImport",
+      "label": "自动导入开关（仅影响人工路径确认步骤）",
+      "type": "checkbox",
+      "default": "0",
+      "hint": "即使开启，AI 路径仍强制 pending 且必须人工逐条确认，不放开 AI 直入（G3 红线）。"
+    },
+    {
+      "key": "manualImportStatus",
+      "label": "人工直接导入词条默认状态",
+      "type": "select",
+      "default": "active",
+      "options": ["active", "pending"],
+      "hint": "人工判定即视为已审核，默认 active 即时生效；合规要求全量留痕时改为 pending。"
+    },
+    {
+      "key": "aiImportStatus",
+      "label": "AI 候选入库状态（强制 pending）",
+      "type": "select",
+      "default": "pending",
+      "options": ["pending"],
+      "hint": "运行时硬编码 clamp 为 pending，此项仅作显式声明与自检提示；误配为 active 时自检给出警告。"
+    },
+    {
+      "key": "keepOriginalImage",
+      "label": "保留原图引用（不复制二进制）",
+      "type": "checkbox",
+      "default": "1",
+      "hint": "只保留经校验的相对路径引用与按需缩略图缓存，不复制原图到审查数据目录，避免敏感图片二次扩散。"
+    },
+    {
+      "key": "maskSensitive",
+      "label": "敏感字段脱敏",
+      "type": "checkbox",
+      "default": "1",
+      "hint": "工人姓名等字段按「姓+*」掩码后展示与留存；关闭前请确认合规要求。"
+    },
+    {
+      "key": "reviewPageSize",
+      "label": "审查工作台单页条数",
+      "type": "number",
+      "default": "50",
+      "hint": "运行时候选值与日志返回条数硬顶 200，避免大结果集拖慢页面。"
+    }
+  ]
+}

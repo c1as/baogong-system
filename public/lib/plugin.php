@@ -93,6 +93,13 @@ function bg_plugin_field($f)
         $opts = array();
         if (isset($f['options']) && is_array($f['options'])) {
             foreach ($f['options'] as $o) {
+                if (is_scalar($o)) {
+                    $val = (string)$o;
+                    if ($val !== '') {
+                        $opts[] = array('value' => bg_plugin_cut($val, 100), 'label' => bg_plugin_cut($val, 40));
+                    }
+                    continue;
+                }
                 if (!is_array($o)) {
                     continue;
                 }

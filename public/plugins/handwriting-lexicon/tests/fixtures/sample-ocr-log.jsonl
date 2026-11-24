@@ -1,0 +1,3 @@
+{"invoke_id":"20260601103012-ocrfusion-broken",
+{"invoke_id":"20260601103012-ocrfusion-a1b2","engine":"baidu-ocr","duration":812,"ts":"2026-06-01 10:30:12","fields":{"date":"2026-06-01","worker":"张三","partNo":"A-123","note":"焊结"},"items":[{"partNo":"A-123","process":"焊结","unit":"个","qty":"12 个"}],"warnings":["手写体笔画粘连"],"raw":"图号 A-123 工序 焊结 单位 个 备注 焊结 张三"}
+{"invoke_id":"20260601110500-ocrfusion-c3d4","engine":"tencent-ocr","duration":640,"ts":"2026-06-01 11:05:00","fields":{"date":"2026-06-01","worker":"李四","partNo":"AS-1234","note":"末"},"items":[{"partNo":"AS-1234","process":"钻孔","unit":"件","qty":"8 件"}],"warnings":[],"raw":"图号 AS-1234 工序 钻孔 单位 件 备注 未"}

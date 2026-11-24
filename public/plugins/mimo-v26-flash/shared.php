@@ -14,6 +14,21 @@ if (!defined('MIMOOCR_DEFAULT_ENDPOINT')) {
     define('MIMOOCR_DEFAULT_MODEL', 'mimo-v2.6-flash');
 }
 
+/* ---------- mbstring 兼容（精简 PHP 环境可能未启用，避免兜底路径 Fatal error） ---------- */
+if (!function_exists('mb_strlen')) {
+    function mb_strlen($s, $enc = null) { return strlen((string)$s); }
+}
+if (!function_exists('mb_substr')) {
+    function mb_substr($s, $start, $len = null, $enc = null) {
+        $s = (string)$s;
+        return $len === null ? substr($s, $start) : substr($s, $start, $len);
+    }
+}
+if (!function_exists('mb_convert_kana')) {
+    /* 缺 mbstring 时无法做全角转半角，原样返回（图号多为半角，影响有限） */
+    function mb_convert_kana($s, $mode = '', $enc = null) { return $s; }
+}
+
 /** 识别指令默认值；可在设置页修改。{TODAY}/{CATALOG} 由 handler 运行时替换 */
 function mimoocr_default_prompt()
 {
@@ -410,6 +425,31 @@ function mimoocr_contains($hay, $needle)
 }
 
 /**
+ * 从本行原文中挑出实际写的工序（零件库候选工序里，确实出现在本行的那个）。
+ * 关键：不能用零件库「铣1、铣2、钳」整串当工序，否则同一图号的多行会因
+ * 工序相同而被去重吞掉，且工序字段本身也是错的。
+ * 返回命中的工序；都没命中返回空串。
+ */
+function mimoocr_pick_process($line, $processStr) {
+    $processStr = (string)$processStr;
+    if ($processStr === '') {
+        return '';
+    }
+    $cands = preg_split('/[、,，\/|]+/u', $processStr, -1, PREG_SPLIT_NO_EMPTY);
+    /* 长候选优先，避免「铣」先命中导致「铣2」被漏 */
+    usort($cands, function ($a, $b) {
+        return mb_strlen(trim($b), 'UTF-8') - mb_strlen(trim($a), 'UTF-8');
+    });
+    foreach ($cands as $p) {
+        $p = trim($p);
+        if ($p !== '' && mimoocr_contains($line, $p)) {
+            return $p;
+        }
+    }
+    return '';
+}
+
+/**
  * 文本兜底解析：模型没给 JSON 时，按零件库模糊匹配与文本规律提取。
  * 与 qwen35-ocr 的兜底逻辑同源，保证结果风格一致。
  */
@@ -522,7 +562,8 @@ function mimoocr_fallback($content, $catalogLines)
         }
         $partNo = $matchNo;
         $partName = $matchName;
-        $process = $matchProc;
+        $process = '';
+        $procPool = $matchProc; /* 本行候选工序来源：优先本行匹配到的零件，其次全局模糊命中 */
         $matched = false;
         foreach ($catalogLines as $line2) {
             $p2 = explode('|', $line2);
@@ -535,21 +576,23 @@ function mimoocr_fallback($content, $catalogLines)
                 $partNo = $no2;
                 $partName = $name2;
                 if (count($p2) >= 3 && trim($p2[2]) !== '') {
-                    $process = trim($p2[2]);
+                    $procPool = trim($p2[2]);
                 }
                 $matched = true;
                 break;
             }
-            if ($name2 !== '' && mb_strlen($name2) >= 3 && mimoocr_contains($line, $name2)) {
+            if ($name2 !== '' && mb_strlen($name2, 'UTF-8') >= 3 && mimoocr_contains($line, $name2)) {
                 $partNo = $no2;
                 $partName = $name2;
                 if (count($p2) >= 3 && trim($p2[2]) !== '') {
-                    $process = trim($p2[2]);
+                    $procPool = trim($p2[2]);
                 }
                 $matched = true;
                 break;
             }
         }
+        /* 只取本行实际出现的工序，不塞零件库整串 */
+        $process = mimoocr_pick_process($line, $procPool);
         if ($partNo === '' && $partName === '') {
             $clean = preg_replace('/\s+/', ' ', $line);
             $clean = preg_replace('/[0-9.\s×xX*个件台套]+$/', '', $clean);
@@ -559,7 +602,8 @@ function mimoocr_fallback($content, $catalogLines)
             }
             $partName = mimoocr_str($clean, 40);
         }
-        $key = $partNo . '|' . $partName . '|' . $process . '|' . $qty;
+        /* 去重键用「图号 + 本行工序 + 数量」：同一图号不同工序/数量的多行都是合法报工，必须保留 */
+        $key = $partNo . '|' . $process . '|' . $qty;
         if (isset($seen[$key])) {
             continue;
         }

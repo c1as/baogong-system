@@ -63,6 +63,9 @@ function pluginFieldHtml(f) {
 function pluginCardHtml(p) {
   const caps = p.capabilities || [];
   const isOcr = caps.includes('report.ocr');
+  const isLexicon = caps.includes('lexicon.manage');
+  const adminField = (p.settings || []).find((f) => f.key === 'adminUrl');
+  const adminHref = adminField && adminField.value ? String(adminField.value) : '/plugins/handwriting-lexicon/admin.php';
   const checkLabel = caps.includes('report.ocr.log') ? '查看日志' : 'API 链接测试';
   return `<div class="plugin-card" data-plugin="${esc(p.id)}">
     <div class="plugin-head">
@@ -83,6 +86,11 @@ function pluginCardHtml(p) {
     <div class="plugin-fields">${(p.settings || []).map(pluginFieldHtml).join('')}</div>
     <div class="plugin-check-box" hidden></div>
     <div class="plugin-actions">
+      ${
+        isLexicon
+          ? `<a class="btn btn-ghost" href="${esc(adminHref)}" target="_blank" rel="noopener">打开手写字词库管理</a>`
+          : ''
+      }
       ${p.hasCheck ? `<button type="button" class="btn btn-ghost" data-plugin-check="${esc(p.id)}">${checkLabel}</button>` : ''}
       ${isOcr ? `<button type="button" class="btn btn-ghost" data-plugin-test="${esc(p.id)}">测试识别</button>` : ''}
       <button type="button" class="btn btn-primary" data-plugin-save="${esc(p.id)}">保存设置</button>

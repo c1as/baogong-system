@@ -1,0 +1,85 @@
+<?php
+/*
+ * 腾讯云 OCR 改造片段（本次仅提供文档，不在本次落地）
+ * 目标文件：tencent-ocr/handler.php、tencent-ocr/lib.php
+ * 前缀：bg_tc_*，函数级插入点与百度插件同构。
+ */
+
+/* ========== 插入点 0：require_once __DIR__ . '/lib.php'; 之后 ========== */
+
+$bglxCandidates = array(
+    dirname(__DIR__) . '/handwriting-lexicon/lib/lexicon.php',
+    dirname(__DIR__, 2) . '/public/plugins/handwriting-lexicon/lib/lexicon.php',
+);
+foreach ($bglxCandidates as $bglxFile) {
+    if (is_file($bglxFile)) {
+        try {
+            require_once $bglxFile;
+        } catch (Throwable $bglxE) {
+            error_log('[handwriting-lexicon] 引入失败：' . $bglxE->getMessage());
+        }
+        break;
+    }
+}
+
+/**
+ * 统一处理词库结果：auto 替换，suggest 追加 warnings。
+ *
+ * @param array  $r       词库查询结果
+ * @param array  $warnings 警告数组（引用）
+ * @param string $field   字段名
+ * @return string 处理后的值
+ */
+function bg_tc_lexicon_apply($r, &$warnings, $field)
+{
+    if (!is_array($r) || !isset($r['action']) || $r['action'] === 'none' || $r['action'] === 'suggest') {
+        return isset($r['original']) ? (string)$r['original'] : '';
+    }
+    if ($r['action'] === 'auto') {
+        return (string)$r['corrected'];
+    }
+    return isset($r['original']) ? (string)$r['original'] : '';
+}
+
+/* ========== 插入点 ①：图号模糊匹配入口（bg_tc_match_part / bg_tc_has_no 之前） ========== */
+
+if (function_exists('bglx_correct_partno')) {
+    try {
+        $rawNo = bg_tc_lexicon_apply(
+            bglx_correct_partno($rawNo, array('plugin' => 'tencent-ocr')),
+            $warnings,
+            '图号'
+        );
+    } catch (Throwable $bglxE) {
+        // 词库异常时保持原值
+    }
+}
+/* 之后将 $rawNo 交给原有 bg_tc_match_part() / bg_tc_has_no() 流程 */
+
+/* ========== 插入点 ②：工序匹配入口（bg_tc_proc_base / bg_tc_match_process 之前） ========== */
+
+if (function_exists('bglx_norm_process')) {
+    try {
+        $r = bglx_norm_process($rawProcess, array('plugin' => 'tencent-ocr'));
+        if (isset($r['action']) && $r['action'] === 'auto') {
+            $rawProcess = (string)$r['corrected'];
+        } elseif (isset($r['action']) && $r['action'] === 'suggest') {
+            $warnings[] = '工序「' . $r['original'] . '」疑似「' . $r['corrected'] . '」，请人工确认';
+        }
+    } catch (Throwable $bglxE) {
+        // 保持原值
+    }
+}
+
+/* ========== 插入点 ③：数量单位解析入口（bg_tc_qty 之前） ========== */
+
+if (function_exists('bglx_norm_unit')) {
+    try {
+        $r = bglx_norm_unit($rawUnit, array('plugin' => 'tencent-ocr'));
+        if (isset($r['action']) && $r['action'] === 'auto') {
+            $rawUnit = (string)$r['corrected'];
+        }
+    } catch (Throwable $bglxE) {
+        // 保持原值
+    }
+}
