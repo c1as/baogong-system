@@ -1,0 +1,10 @@
+{
+  "schema": "baogong-plugin-index/1",
+  "generatedAt": "2026-11-24T11:19:28Z",
+  "source": {
+    "repo": "c1as/baogong-system",
+    "branch": "plugin",
+    "tagPattern": "plugin-<id>-vX.Y.Z"
+  },
+  "plugins": []
+}
