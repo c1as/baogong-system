@@ -4,7 +4,8 @@ name: Plugin Release
 # 触发：推送 plugin-<id>-vX.Y.Z tag；web-v* 系统热更 tag 不会触发。
 # 备用：支持手动触发（workflow_dispatch，填 id/version），用于 tag 事件未触发时补发，产物与 tag 触发一致。
 # 流程：校验 tag/祖先链/清单 → 打包 zip + sha256 → 建 Release 上传 → 取 asset id → upsert plugins-index.json → 提交回 plugin 分支。
-# 双目录策略：打包源是 public/plugins/<id>/（必备基线，只读）；市场安装落盘 data/market-plugins/（本流水线不涉及）。
+# 双目录策略：插件源码在 plugins-src/<id>/（不进主程序热更包）；市场安装落盘 data/market-plugins/（本流水线不涉及）。
+# 主程序内置插件仅 handwriting-lexicon / ocr-ensemble / ocr-log，其余插件一律通过本流水线以插件包发布。
 
 on:
   push:
@@ -13,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       id:
-        description: '插件 id（public/plugins 下的目录名）'
+        description: '插件 id（plugins-src 下的目录名）'
         required: true
       version:
         description: '插件版本 X.Y.Z（须与 plugin.json 一致）'
@@ -81,13 +82,13 @@ jobs:
           set -e
           ID="${{ steps.meta.outputs.id }}"
           VER="${{ steps.meta.outputs.version }}"
-          PJ="public/plugins/${ID}/plugin.json"
+          PJ="plugins-src/${ID}/plugin.json"
           [ -f "$PJ" ] || { echo "缺少 $PJ"; exit 1; }
           jq -e . "$PJ" >/dev/null || { echo "plugin.json 非法"; exit 1; }
           [ "$(jq -r .id "$PJ")" = "$ID" ] || { echo "plugin.json 的 id 与 tag 不一致"; exit 1; }
           [ "$(jq -r .version "$PJ")" = "$VER" ] || { echo "plugin.json 的 version 与 tag 不一致"; exit 1; }
           ENTRY=$(jq -r '.entry // "handler.php"' "$PJ")
-          [ -f "public/plugins/${ID}/${ENTRY}" ] || { echo "entry 文件不存在: $ENTRY"; exit 1; }
+          [ -f "plugins-src/${ID}/${ENTRY}" ] || { echo "entry 文件不存在: $ENTRY"; exit 1; }
           BAD=$(jq -r '.capabilities // [] | map(select(. != "report.ocr" and . != "report.ocr.fusion" and . != "report.ocr.log")) | join(",")' "$PJ")
           [ -z "$BAD" ] || { echo "非法能力标签: $BAD"; exit 1; }
           echo "清单校验通过"
@@ -127,8 +128,8 @@ jobs:
           ID="${{ steps.meta.outputs.id }}"
           VER="${{ steps.meta.outputs.version }}"
           ZIP="plugin-${ID}-v${VER}.zip"
-          ( cd "public/plugins/${ID}" && \
-            zip -r -9 "../../../${ZIP}" . -x '.*' '*/.*' 'data/*' '*.log' )
+          ( cd "plugins-src/${ID}" && \
+            zip -r -9 "../../${ZIP}" . -x '.*' '*/.*' 'data/*' '*.log' )
           SIZE=$(stat -c %s "$ZIP")
           [ "$SIZE" -le 5242880 ] || { echo "包超过 5MB: $SIZE"; exit 1; }
           SHA=$(sha256sum "$ZIP" | awk '{print $1}')
@@ -170,7 +171,7 @@ jobs:
         run: |
           set -e
           ZIP="plugin-${ID}-v${VER}.zip"
-          PJ="public/plugins/${ID}/plugin.json"
+          PJ="plugins-src/${ID}/plugin.json"
           NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
           # 从 plugin.json 同步展示字段，叠加 CI 生成字段（tag/releasedAt/package.*）

@@ -5,7 +5,7 @@
 ## 去哪找代码
 - 前端：`public/js/`（`views`=页面，`features`=能力，`core`=工具，`shell`=外壳与启动，`ui`=通用组件），由 `public/index.html` 按顺序加载
 - 后端：`public/api.php` 仅启动 + 鉴权 + `$ACTIONS` 路由表；接口实现在 `public/actions/*.php`，通用函数在 `public/lib/*.php`
-- OCR 插件：`public/plugins/<id>/{plugin.json,handler.php,check.php}`，协议勿改
+- OCR 插件：内置 3 个在 `public/plugins/<id>/`（handwriting-lexicon、ocr-ensemble、ocr-log）；其余识别插件源码在仓库根 `plugins-src/<id>/`，以插件包形式发布，不进 web 包；插件协议勿改
 - 先读 `docs/模块索引.md` 再定位，避免整文件通读
 
 ## 已知例外

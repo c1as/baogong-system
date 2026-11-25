@@ -65,6 +65,7 @@ php -S 127.0.0.1:8080 -t public
 │       ├── handwriting-lexicon/ 手写字词库：图号别名、工序/单位同义、形近字映射与人工审查
 │       ├── ocr-log/   识别日志：记录每次识别的引擎、耗时、明细与零件匹配结果
 │       └── ocr-ensemble/ 多引擎融合：交叉调用其它识别插件并投票加权
+├── plugins-src/       插件源码目录（baidu-ocr / qwen35-ocr / mimo-v26-flash / mock-ocr，不进 web 热更包，只走插件包发布）
 ├── data/              数据目录（运行时生成，不入库；需给 Web 用户写权限）
 │   ├── db/
 │   │   └── baogong.sqlite   主数据库
