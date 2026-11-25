@@ -532,7 +532,11 @@ function route() {
   if (key === 'stats') return viewStats();
   if (key === 'data') return viewDataStats();
   if (key === 'settings') return viewSettings();
-  if (key === 'market') return viewMarket();
+  if (key === 'market') {
+    const force = !!window.__bgPendingForce;
+    window.__bgPendingForce = false;
+    return viewMarket({ force });
+  }
 
   location.replace('#/parts');
 }
@@ -3809,7 +3813,7 @@ function marketStatusChip(s) {
   return `<span class="mk-chip ${cls}">${esc(MARKET_STATUS_LABEL[s] || s)}</span>`;
 }
 
-async function viewMarket() {
+async function viewMarket(opts = {}) {
   setHead(
     '插件市场',
     '在线发现、安装与升级插件，无需重装 App',
@@ -3820,7 +3824,8 @@ async function viewMarket() {
   view.innerHTML = `<div class="mk-loading">正在加载插件市场…</div>`;
   let data;
   try {
-    data = await api('GET', 'api.php?action=plugin.market.list');
+    // opts.force 来自标头菜单「强制刷新」，跳过本地缓存直接拉取索引
+    data = await api('GET', 'api.php?action=plugin.market.list' + (opts.force ? '&refresh=1' : ''));
   } catch (err) {
     view.innerHTML = `<div class="empty"><div class="empty-icon">${icon('alert', 26)}</div>
       <div class="empty-title">无法加载插件市场</div><p>${esc(err.message)}</p>
@@ -3917,9 +3922,20 @@ async function doMarketRefresh() {
     await api('GET', 'api.php?action=plugin.market.list&refresh=1');
     refreshMarketBadge();
     await viewMarket();
-    toast('索引已刷新', 'ok');
+    toast('索引已强制刷新', 'ok');
   } catch (err) { toast(err.message, 'err'); }
 }
+
+// 供 App 标头菜单「强制刷新插件索引」通过 evaluateJavascript 调用
+window.bgForceRefresh = function () {
+  const key = location.hash.replace(/^#\/?/, '').split('?')[0].split('/')[0];
+  if (key === 'market') {
+    doMarketRefresh();
+  } else {
+    window.__bgPendingForce = true;
+    location.hash = '#/market';
+  }
+};
 
 async function doMarketAction(op, id, label) {
   if (op === 'uninstall') {
