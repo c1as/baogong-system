@@ -1,7 +1,7 @@
 {
   "id": "mimo-v26-flash",
   "name": "小米 MiMo V2.6 Flash",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "调用小米 MiMo 开放平台 mimo-v2.6-flash 视觉模型识别报工单照片，自动提取报工日期、报工人、车间与零件明细，并优先对齐零件库中的图号、名称和工序。",
   "author": "报工系统",
   "capabilities": [

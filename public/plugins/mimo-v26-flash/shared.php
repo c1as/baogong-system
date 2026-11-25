@@ -87,17 +87,26 @@ function mimoocr_fail($status, $msg)
     throw new RuntimeException($msg);
 }
 
-/** 服务器 CA 证书：优先 php.ini curl.cainfo，再找 lib/cacert.pem */
+/** 服务器 CA 证书：优先 php.ini curl.cainfo，再找 lib/cacert.pem；兼容内置与市场两种插件目录 */
 function mimoocr_ca()
 {
     $configured = ini_get('curl.cainfo');
     if (is_string($configured) && $configured !== '' && is_file($configured)) {
         return $configured;
     }
-    $candidates = array(
-        __DIR__ . '/../../lib/cacert.pem',
-        __DIR__ . '/../../../lib/cacert.pem',
-    );
+    $candidates = array();
+    $root = isset($GLOBALS['BG_ROOT']) && is_string($GLOBALS['BG_ROOT']) ? $GLOBALS['BG_ROOT'] : '';
+    if ($root !== '') {
+        $root = rtrim(str_replace('\\', '/', $root), '/');
+        $candidates[] = $root . '/public/lib/cacert.pem';
+        $candidates[] = $root . '/lib/cacert.pem';
+    }
+    $dir = __DIR__;
+    for ($i = 0; $i < 4; $i++) {
+        $dir = dirname($dir);
+        $candidates[] = $dir . '/lib/cacert.pem';
+        $candidates[] = $dir . '/public/lib/cacert.pem';
+    }
     foreach ($candidates as $f) {
         if (is_file($f)) {
             return $f;

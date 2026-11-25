@@ -74,15 +74,24 @@ function qwenocr_fail($code, $message) {
 
 /* ---------- 出网 ---------- */
 
-/* 优先用系统自带的 lib/cacert.pem，其次系统 CA 包 */
+/* 优先用系统自带的 lib/cacert.pem，其次系统 CA 包；兼容内置与市场两种插件目录 */
 function qwenocr_ca() {
-    $candidates = array(
-        __DIR__ . '/../../lib/cacert.pem',
-        __DIR__ . '/../../../lib/cacert.pem',
-        '/etc/ssl/certs/ca-certificates.crt',
-        '/etc/pki/tls/certs/ca-bundle.crt',
-        '/etc/ssl/cert.pem',
-    );
+    $candidates = array();
+    $root = isset($GLOBALS['BG_ROOT']) && is_string($GLOBALS['BG_ROOT']) ? $GLOBALS['BG_ROOT'] : '';
+    if ($root !== '') {
+        $root = rtrim(str_replace('\\', '/', $root), '/');
+        $candidates[] = $root . '/public/lib/cacert.pem';
+        $candidates[] = $root . '/lib/cacert.pem';
+    }
+    $dir = __DIR__;
+    for ($i = 0; $i < 4; $i++) {
+        $dir = dirname($dir);
+        $candidates[] = $dir . '/lib/cacert.pem';
+        $candidates[] = $dir . '/public/lib/cacert.pem';
+    }
+    $candidates[] = '/etc/ssl/certs/ca-certificates.crt';
+    $candidates[] = '/etc/pki/tls/certs/ca-bundle.crt';
+    $candidates[] = '/etc/ssl/cert.pem';
     foreach ($candidates as $c) {
         $r = @realpath($c);
         if ($r !== false && is_file($r)) return $r;

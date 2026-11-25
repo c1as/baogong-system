@@ -49,6 +49,9 @@ function bg_baidu_cache_file()
 
 /**
  * 解析 CA 证书：优先 php.ini 的 curl.cainfo / openssl.cafile，其次使用内置 public/lib/cacert.pem
+ *
+ * 插件既可能位于 public/plugins/<id>（内置），也可能被市场安装到 data/market-plugins/<id>，
+ * 因此不能只用固定相对层级，需按项目根与逐级向上查找 lib/cacert.pem。
  */
 function bg_baidu_ca_file()
 {
@@ -58,8 +61,25 @@ function bg_baidu_ca_file()
             return $v;
         }
     }
-    $local = dirname(__DIR__, 2) . '/lib/cacert.pem';
-    return is_file($local) ? $local : '';
+    $cands = array();
+    $root = isset($GLOBALS['BG_ROOT']) && is_string($GLOBALS['BG_ROOT']) ? $GLOBALS['BG_ROOT'] : '';
+    if ($root !== '') {
+        $root = rtrim(str_replace('\\', '/', $root), '/');
+        $cands[] = $root . '/public/lib/cacert.pem';
+        $cands[] = $root . '/lib/cacert.pem';
+    }
+    $dir = __DIR__;
+    for ($i = 0; $i < 4; $i++) {
+        $dir = dirname($dir);
+        $cands[] = $dir . '/lib/cacert.pem';
+        $cands[] = $dir . '/public/lib/cacert.pem';
+    }
+    foreach ($cands as $f) {
+        if (is_file($f)) {
+            return $f;
+        }
+    }
+    return '';
 }
 
 /**
