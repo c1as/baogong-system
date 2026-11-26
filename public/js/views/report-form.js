@@ -38,6 +38,7 @@ async function viewReportForm(id, presetPartId) {
 
   draft = {
     id: rep ? rep.id : null,
+    updatedAt: rep ? rep.updatedAt || '' : '',
     no: rep ? rep.no : '',
     date: rep ? rep.date : todayStr(),
     worker: rep ? rep.worker : localStorage.getItem('bg.worker') || '',
@@ -745,6 +746,7 @@ async function viewReportForm(id, presetPartId) {
   $('#reportForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const payload = {
+      updatedAt: draft.updatedAt || '',
       no: $('#rNo').value.trim(),
       date: $('#rDate').value,
       worker: $('#rWorker').value.trim(),

@@ -4,10 +4,21 @@
    依赖: lib/config
    注意: 迁移只在启动时执行一次 */
 
+/* schema 版本：改表/索引时 +1，由 PRAGMA user_version 驱动，只在升级后的首个请求执行 DDL */
+if (!defined('BG_SCHEMA_VERSION')) {
+    define('BG_SCHEMA_VERSION', 3);
+}
+
 /* 旧版扁平结构一次性迁移到 data/{db,snapshots,images/parts,images/attachments} */
 function bg_storage_migrate()
 {
     global $DATA_DIR, $DB_FILE, $SNAP_DIR, $IMG_ROOT, $PART_IMG_DIR, $ATT_IMG_DIR;
+
+    /* 迁移只做一次：完成后写 .storage-v3，后续请求直接返回，避免每次 scandir 图片目录 */
+    $done = $DATA_DIR . '/.storage-v3';
+    if (is_file($done)) {
+        return;
+    }
 
     foreach (array('', '-wal', '-shm') as $suffix) {
         $old = $DATA_DIR . '/baogong.sqlite' . $suffix;
@@ -53,6 +64,7 @@ function bg_storage_migrate()
 
     $marker = $DATA_DIR . '/.storage-v2';
     if (is_file($marker) || !is_file($DB_FILE)) {
+        @file_put_contents($done, date('c'));
         return;
     }
     try {
@@ -136,6 +148,7 @@ function bg_storage_migrate()
     } catch (Throwable $e) {
         @error_log('[baogong] storage migrate: ' . $e->getMessage());
     }
+    @file_put_contents($done, date('c'));
 }
 
 function bg_migrate_part($p)
@@ -223,11 +236,16 @@ function bg_pdo()
     }
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
-    $pdo->exec('PRAGMA journal_mode=WAL');
     $pdo->exec('PRAGMA synchronous=NORMAL');
     $pdo->exec('PRAGMA busy_timeout=5000');
-    bg_sqlite_schema($pdo);
-    bg_sqlite_import_json($pdo);
+    /* 建表/补索引只在首次或 schema 版本升级后执行一次；日常请求只建立连接 */
+    $ver = (int)$pdo->query('PRAGMA user_version')->fetchColumn();
+    if ($ver < BG_SCHEMA_VERSION) {
+        $pdo->exec('PRAGMA journal_mode=WAL');
+        bg_sqlite_schema($pdo);
+        bg_sqlite_import_json($pdo);
+        $pdo->exec('PRAGMA user_version=' . BG_SCHEMA_VERSION);
+    }
     $BG_PDO = $pdo;
     return $pdo;
 }
@@ -296,7 +314,16 @@ function bg_sqlite_schema($pdo)
         'CREATE INDEX IF NOT EXISTS idx_orders_part ON orders(part_id, date)',
         'CREATE INDEX IF NOT EXISTS idx_parts_updated ON parts(updated_at DESC)',
         'CREATE INDEX IF NOT EXISTS idx_reports_created ON reports(date DESC, created_at DESC)',
-        'CREATE INDEX IF NOT EXISTS idx_items_part_order ON report_items(part_id, order_id)'
+        'CREATE INDEX IF NOT EXISTS idx_items_part_order ON report_items(part_id, order_id)',
+        /* 单号序列：按「前缀（日期）」原子自增，避免并发下内存扫描拿到同一单号 */
+        "CREATE TABLE IF NOT EXISTS seq (
+            key TEXT PRIMARY KEY,
+            value INTEGER NOT NULL DEFAULT 0
+        )",
+        /* v3.6：表达式索引，让 ORDER BY COALESCE(...) 也能走索引，避免临时 B 树排序 */
+        "CREATE INDEX IF NOT EXISTS idx_parts_order ON parts(COALESCE(updated_at, '') DESC, id DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_reports_order ON reports(COALESCE(date, '') DESC, COALESCE(created_at, '') DESC, no DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_orders_order ON orders(COALESCE(date, '') DESC, COALESCE(created_at, '') DESC, id DESC)"
     );
     foreach ($sql as $one) {
         $pdo->exec($one);

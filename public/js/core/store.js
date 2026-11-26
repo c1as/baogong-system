@@ -55,6 +55,10 @@ let statStore = newStore();
 
 function imgUrl(name) {
   if (!name) return '';
-  if (name.startsWith('data:') || name.startsWith('/') || /^[a-z][a-z0-9+.-]*:/i.test(name)) return name;
-  return (state.imageBase || '/img/') + encodeURIComponent(name);
+  const s = String(name);
+  // 仅放行本地上传预览的 data:image，其余协议（javascript:/vbscript:/http:/file: 等）一律拒绝
+  if (/^data:image\/(jpeg|png|webp);base64,/i.test(s)) return s;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(s)) return '';
+  if (s.startsWith('/')) return s;
+  return (state.imageBase || '/img/') + encodeURIComponent(s);
 }

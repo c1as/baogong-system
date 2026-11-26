@@ -256,6 +256,7 @@ async function viewOrderForm(id, presetPartId) {
     const qty = Number($('#oQty').value || 0);
     if (!(qty > 0)) return toast('请填写订单数量', 'err');
     const payload = {
+      updatedAt: order ? order.updatedAt || '' : '',
       no: $('#oNo').value.trim(),
       date: $('#oDate').value,
       partId: picked,

@@ -351,3 +351,139 @@ function bg_bootstrap_counts($pdo)
         'items' => (int)$pdo->query('SELECT COUNT(*) FROM report_items')->fetchColumn(),
     );
 }
+
+/* ================================================================ 写接口按需取单行
+   只为校验/回显读取目标记录，避免写一次就全量读库 */
+
+function bg_part_by_id($pdo, $id)
+{
+    $stmt = $pdo->prepare('SELECT * FROM parts WHERE id = ?');
+    $stmt->execute(array((string)$id));
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    return $row ? bg_part_row($row) : null;
+}
+
+function bg_parts_by_ids($pdo, $ids)
+{
+    $ids = array_values(array_unique(array_filter($ids, function ($v) {
+        return is_string($v) && $v !== '';
+    })));
+    if (!count($ids)) {
+        return array();
+    }
+    $ph = implode(',', array_fill(0, count($ids), '?'));
+    $stmt = $pdo->prepare('SELECT * FROM parts WHERE id IN (' . $ph . ')');
+    $stmt->execute($ids);
+    $out = array();
+    foreach ($stmt as $row) {
+        $out[] = bg_part_row($row);
+    }
+    return $out;
+}
+
+function bg_order_by_id($pdo, $id)
+{
+    $stmt = $pdo->prepare('SELECT * FROM orders WHERE id = ?');
+    $stmt->execute(array((string)$id));
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    return $row ? bg_order_row($row) : null;
+}
+
+function bg_orders_by_ids($pdo, $ids)
+{
+    $ids = array_values(array_unique(array_filter($ids, function ($v) {
+        return is_string($v) && $v !== '';
+    })));
+    if (!count($ids)) {
+        return array();
+    }
+    $ph = implode(',', array_fill(0, count($ids), '?'));
+    $stmt = $pdo->prepare('SELECT * FROM orders WHERE id IN (' . $ph . ')');
+    $stmt->execute($ids);
+    $out = array();
+    foreach ($stmt as $row) {
+        $out[] = bg_order_row($row);
+    }
+    return $out;
+}
+
+/* 单号查重只需要命中的那一行 */
+function bg_order_row_by_no($pdo, $no)
+{
+    $stmt = $pdo->prepare('SELECT * FROM orders WHERE no = ?');
+    $stmt->execute(array((string)$no));
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    return $row ? bg_order_row($row) : null;
+}
+
+function bg_report_row_by_no($pdo, $no)
+{
+    $stmt = $pdo->prepare('SELECT * FROM reports WHERE no = ?');
+    $stmt->execute(array((string)$no));
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$row) {
+        return null;
+    }
+    return array(
+        'id' => $row['id'],
+        'no' => $row['no'],
+        'date' => $row['date'],
+        'worker' => $row['worker'],
+        'workshop' => isset($row['workshop']) ? $row['workshop'] : '',
+        'note' => isset($row['note']) ? $row['note'] : '',
+        'orderId' => $row['order_id'],
+        'orderNo' => $row['order_no'],
+        'images' => json_decode(isset($row['images']) ? $row['images'] : '[]', true),
+        'items' => array(),
+        'createdAt' => isset($row['created_at']) ? $row['created_at'] : '',
+        'updatedAt' => isset($row['updated_at']) ? $row['updated_at'] : '',
+    );
+}
+
+/* 报工明细里引用到的零件/订单 id，用于按需取校验数据 */
+function bg_report_item_refs($in)
+{
+    $partIds = array();
+    $orderIds = array();
+    if (isset($in['items']) && is_array($in['items'])) {
+        foreach ($in['items'] as $it) {
+            if (!is_array($it)) {
+                continue;
+            }
+            if (isset($it['partId']) && is_string($it['partId']) && $it['partId'] !== '') {
+                $partIds[] = $it['partId'];
+            }
+            if (isset($it['orderId']) && is_string($it['orderId']) && $it['orderId'] !== '') {
+                $orderIds[] = $it['orderId'];
+            }
+        }
+    }
+    return array($partIds, $orderIds);
+}
+
+/* 单张报工单（含明细），编辑/删除时用 */
+function bg_report_by_id($pdo, $id)
+{
+    $stmt = $pdo->prepare('SELECT * FROM reports WHERE id = ?');
+    $stmt->execute(array((string)$id));
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$row) {
+        return null;
+    }
+    $items = bg_items_for($pdo, array($row['id']));
+    $images = json_decode(isset($row['images']) ? $row['images'] : '[]', true);
+    return array(
+        'id' => $row['id'],
+        'no' => $row['no'],
+        'date' => $row['date'],
+        'worker' => $row['worker'],
+        'workshop' => isset($row['workshop']) ? $row['workshop'] : '',
+        'note' => isset($row['note']) ? $row['note'] : '',
+        'orderId' => $row['order_id'],
+        'orderNo' => $row['order_no'],
+        'images' => is_array($images) ? $images : array(),
+        'items' => isset($items[$row['id']]) ? $items[$row['id']] : array(),
+        'createdAt' => isset($row['created_at']) ? $row['created_at'] : '',
+        'updatedAt' => isset($row['updated_at']) ? $row['updated_at'] : '',
+    );
+}

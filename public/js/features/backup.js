@@ -72,7 +72,7 @@ function openBackup() {
     <p class="hint">快照包含零件、订单、报工等全部数据；图片在 data/images/{parts,attachments,drawings} 里（零件图按零件名、附件按上传日期+序号命名），迁移服务器时请连同 data 文件夹一起复制。</p>
     <div class="snap-danger">
       <div class="snap-danger-head">${icon('alert', 15)}数据清除</div>
-      <p>清空零件、订单、报工单及全部图片；快照会保留，误清除后可恢复。</p>
+      <p>清空零件、订单、报工单及全部图片，同时清除识别日志与审查工作台的审查记录（手写字词库保留）；快照会保留，业务数据误清除后可恢复。</p>
       <button type="button" class="btn btn-danger" id="clearData">${icon('trash', 15)}清空全部业务数据…</button>
     </div>
     <div class="modal-actions"><button class="btn btn-ghost" data-cancel>关闭</button></div>
@@ -193,7 +193,7 @@ function openClearData() {
   const { root, close } = openModal(
     `
     <h3>清空全部业务数据？</h3>
-    <p>零件、订单、报工单和全部图片都会被删除，且无法撤销。清除前会自动创建一份快照，可在「已有快照」中恢复。</p>
+    <p>零件、订单、报工单、全部图片、识别日志与审查工作台的审查记录都会被删除（手写字词库保留），且识别日志与审查记录无法恢复。清除前会自动创建一份业务数据快照，可在「已有快照」中恢复。</p>
     <div class="clear-verify">
       <label for="clearVerifyInput">${needPwd ? '请输入登录密码以继续' : '请输入「清除全部数据」以继续'}</label>
       <input class="input" id="clearVerifyInput" type="${needPwd ? 'password' : 'text'}"
@@ -229,7 +229,7 @@ function openClearData() {
     try {
       const res = await api('POST', 'api.php?action=data.clear', needPwd ? { password: value } : { phrase: value.trim() });
       const n = (res.cleared && res.cleared.parts) || 0;
-      toast(`已清除全部数据（零件 ${fmtQty(n)} 个、图片 ${fmtQty(res.images || 0)} 张）`, 'ok');
+      toast(`已清除全部数据（零件 ${fmtQty(n)} 个、图片 ${fmtQty(res.images || 0)} 张、识别日志 ${fmtQty(res.logs || 0)} 条、审查记录 ${res.reviews ? '1 份' : '0 份'}）`, 'ok');
       await refreshState();
       route();
       openBackup();

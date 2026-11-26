@@ -47,6 +47,11 @@ $endpoint = qwenocr_cfg($cfg, 'endpoint', QWENOCR_DEFAULT_ENDPOINT);
 if (!preg_match('#^https://[^[:space:]]+$#i', $endpoint)) {
     qwenocr_fail(400, '接口地址必须以 https:// 开头，请检查设置');
 }
+/* 安全：只允许官方域名，避免把 API Key 发往任意地址 */
+$qwen_host = strtolower((string)parse_url($endpoint, PHP_URL_HOST));
+if (!in_array($qwen_host, array('dashscope.aliyuncs.com', 'dashscope-intl.aliyuncs.com'), true)) {
+    qwenocr_fail(400, '接口地址不在官方域名白名单（dashscope.aliyuncs.com）内');
+}
 
 $model      = qwenocr_cfg($cfg, 'model', QWENOCR_DEFAULT_MODEL);
 $max_tokens = qwenocr_int($cfg, 'maxTokens', 4096, 256, 32768);

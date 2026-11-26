@@ -143,6 +143,50 @@ function bg_pm_assert_safe_path($path, $root)
     return strpos($targetReal, $rootReal) === 0;
 }
 
+/* ============================================================ T04 · 受控外访 */
+
+/**
+ * 手动跟随跳转的受限 GET：每一跳都校验 https + 公网主机，跨主机时剥离 Authorization。
+ * 用于索引拉取、来源测试与插件包下载，避免 SSRF/令牌外带。
+ */
+function bg_pm_http_get($url, $headers, $maxBytes, $timeout = 15)
+{
+    $url = trim((string)$url);
+    $headers = is_array($headers) ? $headers : array();
+    for ($hop = 0; $hop < 4; $hop++) {
+        if (!bg_url_https_public($url)) {
+            bg_fail(403, '地址不可访问：仅允许公网 HTTPS，拒绝内网/回环地址');
+        }
+        $res = bg_http('GET', $url, $headers, '', $timeout, false, false);
+        if (!$res['ok']) {
+            bg_fail(502, '请求失败' . ($res['error'] !== '' ? '：' . $res['error'] : ''));
+        }
+        if ($res['status'] >= 300 && $res['status'] < 400 && $res['redirect'] !== '') {
+            $from = strtolower((string)@parse_url($url, PHP_URL_HOST));
+            $to = strtolower((string)@parse_url($res['redirect'], PHP_URL_HOST));
+            if ($from !== $to) {
+                $headers = array_values(array_filter($headers, function ($h) {
+                    return stripos((string)$h, 'Authorization:') !== 0;
+                }));
+            }
+            $url = $res['redirect'];
+            continue;
+        }
+        $body = (string)$res['body'];
+        if (strlen($body) > $maxBytes) {
+            bg_fail(413, '响应超过大小上限（' . $maxBytes . ' 字节）');
+        }
+        return array(
+            'ok' => true,
+            'status' => (int)$res['status'],
+            'body' => $body,
+            'ms' => (int)$res['ms'],
+            'url' => $url,
+        );
+    }
+    bg_fail(502, '跳转次数过多');
+}
+
 /* ============================================================ T04 · SourceConfig */
 
 class BG_PM_SourceConfig
@@ -411,10 +455,7 @@ class BG_PM_IndexClient
         if ($cfg['token'] !== '') {
             $headers[] = 'Authorization: Bearer ' . $cfg['token'];
         }
-        $res = bg_http('GET', $cfg['url'], $headers, '', 15);
-        if (!$res['ok'] || $res['status'] < 200 || $res['status'] >= 300) {
-            bg_fail(502, '索引拉取失败（HTTP ' . $res['status'] . '）' . ($res['error'] ? '：' . $res['error'] : ''));
-        }
+        $res = bg_pm_http_get($cfg['url'], $headers, 2 * 1024 * 1024, 15);
         $idx = $this->parseGithubContents($res['body']);
         if (!is_array($idx)) {
             bg_fail(502, '索引格式无效或 schema 不匹配');
@@ -425,7 +466,7 @@ class BG_PM_IndexClient
         return $idx;
     }
 
-    /** 测试来源连通性，不写缓存 */
+    /** 测试来源连通性，不写缓存；只使用本次提交的令牌，绝不复用已保存令牌 */
     public function test($url, $token)
     {
         if (!$this->src->assertHttps($url)) {
@@ -434,13 +475,8 @@ class BG_PM_IndexClient
         $headers = array('User-Agent: baogong-plugin-market/1.1', 'Accept: application/vnd.github+json');
         if ($token !== '' && $token !== '********') {
             $headers[] = 'Authorization: Bearer ' . $token;
-        } elseif ($this->cfg['token'] !== '') {
-            $headers[] = 'Authorization: Bearer ' . $this->cfg['token'];
         }
-        $res = bg_http('GET', $url, $headers, '', 15);
-        if (!$res['ok'] || $res['status'] < 200 || $res['status'] >= 300) {
-            bg_fail(502, '连接失败（HTTP ' . $res['status'] . '）' . ($res['error'] ? '：' . $res['error'] : ''));
-        }
+        $res = bg_pm_http_get($url, $headers, 2 * 1024 * 1024, 15);
         $idx = $this->parseGithubContents($res['body']);
         if (!is_array($idx)) {
             bg_fail(502, '返回内容不是有效的插件索引');
@@ -745,21 +781,13 @@ class BG_PM_PackageFetcher
         if ($token !== '') {
             $headers[] = 'Authorization: Bearer ' . $token;
         }
-        $res = bg_http('GET', $url, $headers, '', 30);
-        if (!$res['ok'] || $res['status'] < 200 || $res['status'] >= 300) {
-            @unlink($tmp);
-            bg_fail(410, '插件包下载失败（HTTP ' . $res['status'] . '）');
-        }
-        $len = strlen($res['body']);
-        if ($len > BG_PM_MAX_BYTES) {
-            @unlink($tmp);
-            bg_fail(413, '插件包超过 5MB');
-        }
-        if (function_exists('hash') && strtolower(hash('sha256', $res['body'])) !== strtolower($sha256)) {
+        $res = bg_pm_http_get($url, $headers, BG_PM_MAX_BYTES, 30);
+        $body = (string)$res['body'];
+        if (function_exists('hash') && strtolower(hash('sha256', $body)) !== strtolower($sha256)) {
             @unlink($tmp);
             bg_fail(410, '插件包校验失败（SHA256 不符）');
         }
-        if (@file_put_contents($tmp, $res['body']) === false) {
+        if (@file_put_contents($tmp, $body) === false) {
             bg_fail(500, '插件包暂存失败');
         }
         return $tmp;

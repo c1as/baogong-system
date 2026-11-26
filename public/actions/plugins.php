@@ -67,11 +67,22 @@ function act_plugin_save()
         } elseif ($f['type'] === 'multiselect') {
             $arr = is_array($v) ? $v : preg_split('/[\s,，、;；]+/u', is_scalar($v) ? (string)$v : '');
             $allowed = array();
-            foreach (bg_plugin_all() as $p) {
-                if ($p['id'] === $m['id'] || !in_array('report.ocr', $p['capabilities'], true)) {
-                    continue;
+            if (isset($f['source']) && $f['source'] === 'ocrEngines') {
+                /* 动态来源：只允许选择其它已安装的 report.ocr 插件 */
+                foreach (bg_plugin_all() as $p) {
+                    if ($p['id'] === $m['id'] || !in_array('report.ocr', $p['capabilities'], true)) {
+                        continue;
+                    }
+                    $allowed[$p['id']] = true;
                 }
-                $allowed[$p['id']] = true;
+            } else {
+                /* 自定义选项：按清单中声明的 value 白名单保存 */
+                $opts = isset($f['options']) && is_array($f['options']) ? $f['options'] : array();
+                foreach ($opts as $o) {
+                    if (is_array($o) && isset($o['value'])) {
+                        $allowed[(string)$o['value']] = true;
+                    }
+                }
             }
             $picked = array();
             foreach ($arr as $x) {

@@ -211,10 +211,33 @@ function bg_backup_force($reason = 'manual', $note = '')
     return bg_snapshot_create($reason, $note);
 }
 
-/* 清空全部业务数据：零件 / 订单 / 报工单及全部图片；快照保留，便于误清除后恢复 */
+/* 递归删除目录内文件与子目录（保留目录本身），返回删除的文件数 */
+function bg_clear_dir_files($dir)
+{
+    $items = @scandir($dir);
+    if (!is_array($items)) {
+        return 0;
+    }
+    $n = 0;
+    foreach ($items as $f) {
+        if ($f === '.' || $f === '..') {
+            continue;
+        }
+        $path = $dir . '/' . $f;
+        if (is_dir($path)) {
+            $n += bg_clear_dir_files($path);
+            @rmdir($path);
+        } elseif (@unlink($path)) {
+            $n++;
+        }
+    }
+    return $n;
+}
+
+/* 清空全部业务数据：零件 / 订单 / 报工单、全部图片、识别日志与审查记录；快照保留，便于误清除后恢复 */
 function bg_data_clear()
 {
-    global $PART_IMG_DIR, $ATT_IMG_DIR, $DRAW_DIR, $BG_SNAP;
+    global $PART_IMG_DIR, $ATT_IMG_DIR, $DRAW_DIR, $DATA_DIR, $BG_SNAP;
     $counts = bg_snapshot_counts();
     $pdo = bg_pdo();
     $pdo->beginTransaction();
@@ -223,6 +246,8 @@ function bg_data_clear()
         $pdo->exec('DELETE FROM reports');
         $pdo->exec('DELETE FROM orders');
         $pdo->exec('DELETE FROM parts');
+        /* 清空业务数据的同时重置单号序列，下次从 01 开始 */
+        $pdo->exec('DELETE FROM seq');
         $pdo->commit();
     } catch (Throwable $e) {
         if ($pdo->inTransaction()) {
@@ -245,6 +270,20 @@ function bg_data_clear()
             }
         }
     }
+    /* 识别与审查数据：审查工作台列表来自 OCR 日志，逐条判定存在审查记录与归档。
+       handwriting_lexicon.json 是人工积累的词库资产，不随业务数据清除。 */
+    $logs = bg_clear_dir_files($DATA_DIR . '/ocr-logs');
+    $reviews = 0;
+    $reviewFile = $DATA_DIR . '/handwriting_review.json';
+    if (is_file($reviewFile) && @unlink($reviewFile)) {
+        $reviews = 1;
+    }
+    bg_clear_dir_files($DATA_DIR . '/review-archive');
     $BG_SNAP = null;
-    return array('cleared' => $counts, 'images' => $images);
+    return array(
+        'cleared' => $counts,
+        'images' => $images,
+        'logs' => $logs,
+        'reviews' => $reviews,
+    );
 }

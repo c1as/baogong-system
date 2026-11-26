@@ -155,12 +155,12 @@ function act_part_create()
     }
     $body = bg_body();
     $in = isset($body['part']) && is_array($body['part']) ? $body['part'] : $body;
-    $db = bg_db_load();
+    $pdo = bg_pdo();
     $part = bg_normalize_part($in, null);
-    foreach ($db['parts'] as $p) {
-        if (isset($p['no']) && $p['no'] === $part['no']) {
-            bg_fail(400, '零件图号「' . $part['no'] . '」已存在');
-        }
+    $stmt = $pdo->prepare('SELECT 1 FROM parts WHERE no = ?');
+    $stmt->execute(array($part['no']));
+    if ($stmt->fetchColumn()) {
+        bg_fail(400, '零件图号「' . $part['no'] . '」已存在');
     }
     if (isset($in['image']) && is_string($in['image']) && strpos($in['image'], 'data:') === 0) {
         $part['image'] = bg_image_save('parts', bg_part_image_base($part), $in['image'], $part['id']);
@@ -169,8 +169,14 @@ function act_part_create()
     foreach ($newDrawings as $nd) {
         $part['drawings'][] = bg_drawing_save($part, isset($nd['data']) ? $nd['data'] : '');
     }
-    $db['parts'][] = $part;
-    bg_db_save($db);
+    try {
+        bg_part_insert($pdo, $part);
+    } catch (Throwable $e) {
+        if (bg_unique_error($e)) {
+            bg_fail(400, '零件图号「' . $part['no'] . '」已存在');
+        }
+        throw $e;
+    }
     bg_json(200, array('part' => $part));
     return;
 }
@@ -184,23 +190,21 @@ function act_part_update()
     $id = isset($_GET['id']) && is_string($_GET['id']) ? $_GET['id'] : '';
     $body = bg_body();
     $in = isset($body['part']) && is_array($body['part']) ? $body['part'] : $body;
-    $db = bg_db_load();
-    $target = -1;
-    foreach ($db['parts'] as $i => $p) {
-        if (isset($p['id']) && $p['id'] === $id) {
-            $target = $i;
-            break;
-        }
-    }
-    if ($target < 0) {
+    $pdo = bg_pdo();
+    $existing = bg_part_by_id($pdo, $id);
+    if (!$existing) {
         bg_fail(404, '零件不存在');
     }
-    $existing = $db['parts'][$target];
+    /* 客户端带回了编辑时看到的 updatedAt 时先做一次快速冲突判断 */
+    if (isset($in['updatedAt']) && is_string($in['updatedAt']) && $in['updatedAt'] !== ''
+        && $in['updatedAt'] !== $existing['updatedAt']) {
+        bg_fail(409, '该零件已被他人修改，请刷新后重试');
+    }
     $part = bg_normalize_part($in, $existing);
-    foreach ($db['parts'] as $p) {
-        if (isset($p['no']) && $p['no'] === $part['no'] && $p['id'] !== $existing['id']) {
-            bg_fail(400, '零件图号「' . $part['no'] . '」已存在');
-        }
+    $stmt = $pdo->prepare('SELECT 1 FROM parts WHERE no = ? AND id <> ?');
+    $stmt->execute(array($part['no'], $existing['id']));
+    if ($stmt->fetchColumn()) {
+        bg_fail(400, '零件图号「' . $part['no'] . '」已存在');
     }
     $part['image'] = isset($existing['image']) ? bg_image_name($existing['image']) : '';
     if (isset($in['image']) && is_string($in['image']) && strpos($in['image'], 'data:') === 0) {
@@ -232,8 +236,17 @@ function act_part_update()
     if ($oldName !== (string)$part['name'] || (isset($existing['no']) ? $existing['no'] : '') !== $part['no']) {
         $part['drawings'] = bg_drawings_rename($part['drawings'], $part);
     }
-    $db['parts'][$target] = $part;
-    bg_db_save($db);
+    try {
+        $rows = bg_part_update($pdo, $part, $existing['updatedAt']);
+        if ($rows < 1) {
+            bg_fail(409, '该零件已被他人修改，请刷新后重试');
+        }
+    } catch (Throwable $e) {
+        if (bg_unique_error($e)) {
+            bg_fail(400, '零件图号「' . $part['no'] . '」已存在');
+        }
+        throw $e;
+    }
     bg_json(200, array('part' => $part));
     return;
 }
@@ -241,24 +254,17 @@ function act_part_update()
 function act_part_delete()
 {
     $id = isset($_GET['id']) && is_string($_GET['id']) ? $_GET['id'] : '';
-    $db = bg_db_load();
-    $target = -1;
-    foreach ($db['parts'] as $i => $p) {
-        if (isset($p['id']) && $p['id'] === $id) {
-            $target = $i;
-            break;
-        }
-    }
-    if ($target < 0) {
+    $pdo = bg_pdo();
+    $existing = bg_part_by_id($pdo, $id);
+    if (!$existing) {
         bg_fail(404, '零件不存在');
     }
-    bg_image_remove(isset($db['parts'][$target]['image']) ? $db['parts'][$target]['image'] : '');
-    $drawings = isset($db['parts'][$target]['drawings']) && is_array($db['parts'][$target]['drawings']) ? $db['parts'][$target]['drawings'] : array();
+    bg_image_remove(isset($existing['image']) ? $existing['image'] : '');
+    $drawings = isset($existing['drawings']) && is_array($existing['drawings']) ? $existing['drawings'] : array();
     foreach ($drawings as $d) {
         bg_image_remove(isset($d['path']) ? $d['path'] : '');
     }
-    array_splice($db['parts'], $target, 1);
-    bg_db_save($db);
+    bg_part_delete($pdo, $id);
     bg_json(200, array('ok' => true));
     return;
 }
@@ -275,20 +281,15 @@ function act_part_drawing_remove()
     if ($path === '' || strpos($path, 'drawings/') !== 0) {
         bg_fail(400, '图纸路径不正确');
     }
-    $db = bg_db_load();
-    $target = -1;
-    foreach ($db['parts'] as $i => $p) {
-        if (isset($p['id']) && $p['id'] === $id) {
-            $target = $i;
-            break;
-        }
-    }
-    if ($target < 0) {
+    $pdo = bg_pdo();
+    $existing = bg_part_by_id($pdo, $id);
+    if (!$existing) {
         bg_fail(404, '零件不存在');
     }
     $left = array();
     $found = false;
-    foreach ($db['parts'][$target]['drawings'] as $d) {
+    $drawings = isset($existing['drawings']) && is_array($existing['drawings']) ? $existing['drawings'] : array();
+    foreach ($drawings as $d) {
         if (isset($d['path']) && $d['path'] === $path) {
             $found = true;
             continue;
@@ -299,10 +300,13 @@ function act_part_drawing_remove()
         bg_fail(404, '图纸不存在');
     }
     bg_image_remove($path);
-    $db['parts'][$target]['drawings'] = $left;
-    $db['parts'][$target]['updatedAt'] = gmdate('Y-m-d\TH:i:s\Z');
-    bg_db_save($db);
-    bg_json(200, array('part' => $db['parts'][$target]));
+    $part = $existing;
+    $part['drawings'] = $left;
+    $part['updatedAt'] = gmdate('Y-m-d\TH:i:s\Z');
+    if (bg_part_update($pdo, $part, $existing['updatedAt']) < 1) {
+        bg_fail(409, '该零件已被他人修改，请刷新后重试');
+    }
+    bg_json(200, array('part' => $part));
     return;
 }
 
@@ -314,22 +318,22 @@ function act_part_stock()
     }
     $id = isset($_GET['id']) && is_string($_GET['id']) ? $_GET['id'] : '';
     $body = bg_body();
-    $db = bg_db_load();
-    $target = -1;
-    foreach ($db['parts'] as $i => $p) {
-        if (isset($p['id']) && $p['id'] === $id) {
-            $target = $i;
-            break;
-        }
-    }
-    if ($target < 0) {
+    $pdo = bg_pdo();
+    $part = bg_part_by_id($pdo, $id);
+    if (!$part) {
         bg_fail(404, '零件不存在');
     }
     $stock = bg_round(bg_num(isset($body['stock']) ? $body['stock'] : 0, '库存数量', 0, 1000000000));
-    $db['parts'][$target]['stock'] = $stock;
-    $db['parts'][$target]['updatedAt'] = gmdate('Y-m-d\TH:i:s\Z');
-    bg_db_save($db);
-    bg_json(200, array('part' => $db['parts'][$target]));
+    $now = gmdate('Y-m-d\TH:i:s\Z');
+    /* 只更新库存列，避免整行回写覆盖别人刚改的名称/工序 */
+    $stmt = $pdo->prepare('UPDATE parts SET stock = ?, updated_at = ? WHERE id = ?');
+    $stmt->execute(array($stock, $now, $id));
+    if ($stmt->rowCount() < 1) {
+        bg_fail(404, '零件不存在');
+    }
+    $part['stock'] = $stock;
+    $part['updatedAt'] = $now;
+    bg_json(200, array('part' => $part));
     return;
 }
 
@@ -347,11 +351,17 @@ function act_part_import()
     if (count($rows) > 500) {
         bg_fail(400, '一次最多导入 500 个零件');
     }
-    $db = bg_db_load();
+    $pdo = bg_pdo();
+    /* 预建 no => id 映射，避免逐行全表扫描；整批写入放在一个事务里 */
+    $byNo = array();
+    foreach ($pdo->query('SELECT id, no FROM parts') as $r) {
+        $byNo[$r['no']] = $r['id'];
+    }
     $added = 0;
     $updated = 0;
     $errors = array();
     $BG_THROW = true;
+    $pdo->beginTransaction();
     try {
         $i = 0;
         foreach ($rows as $row) {
@@ -359,29 +369,38 @@ function act_part_import()
             try {
                 $row = is_array($row) ? $row : array();
                 $no = isset($row['no']) ? trim((string)$row['no']) : '';
-                $existingIndex = -1;
-                foreach ($db['parts'] as $pi => $p) {
-                    if (isset($p['no']) && $p['no'] === $no) {
-                        $existingIndex = $pi;
-                        break;
-                    }
-                }
-                $existing = $existingIndex >= 0 ? $db['parts'][$existingIndex] : null;
+                $existing = isset($byNo[$no]) ? bg_part_by_id($pdo, $byNo[$no]) : null;
                 $part = bg_normalize_part($row, $existing);
-                if ($existingIndex >= 0) {
-                    $db['parts'][$existingIndex] = $part;
+                if ($existing) {
+                    if (bg_part_update($pdo, $part, $existing['updatedAt']) < 1) {
+                        throw new RuntimeException('该零件已被他人修改，请重试');
+                    }
                     $updated++;
                 } else {
-                    $db['parts'][] = $part;
+                    bg_part_insert($pdo, $part);
+                    $byNo[$part['no']] = $part['id'];
                     $added++;
                 }
             } catch (RuntimeException $e) {
                 if (count($errors) < 20) {
                     $errors[] = '第 ' . $i . ' 行：' . $e->getMessage();
                 }
+            } catch (Throwable $e) {
+                if (bg_unique_error($e)) {
+                    if (count($errors) < 20) {
+                        $errors[] = '第 ' . $i . ' 行：零件图号已存在';
+                    }
+                    continue;
+                }
+                throw $e;
             }
         }
-        bg_db_save($db);
+        $pdo->commit();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        throw $e;
     } finally {
         $BG_THROW = false;
     }

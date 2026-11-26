@@ -12,6 +12,10 @@ function bg_csv_cell($v)
     if ($s === '') {
         return '';
     }
+    // 防 Excel 公式注入：以 = + - @ 或制表/回车开头的文本前置单引号；纯负数保留数值形态
+    if (preg_match('/^[=+\-@\t\r]/', $s) && !preg_match('/^-?\d+(\.\d+)?$/', $s)) {
+        $s = "'" . $s;
+    }
     if (strpbrk($s, ",\"\r\n") !== false) {
         return '"' . str_replace('"', '""', $s) . '"';
     }

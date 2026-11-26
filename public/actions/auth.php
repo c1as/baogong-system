@@ -7,13 +7,14 @@
 
 function act_health()
 {
-    $db = bg_db_load();
+    /* 免登录接口只做计数，不再全量读库 + 逐条 md5，避免未认证请求放大 CPU/IO */
+    $pdo = bg_pdo();
     bg_json(200, array(
         'ok' => true,
         'time' => gmdate('c'),
-        'parts' => count($db['parts']),
-        'reports' => count($db['reports']),
-        'orders' => count($db['orders']),
+        'parts' => (int)$pdo->query('SELECT COUNT(*) FROM parts')->fetchColumn(),
+        'reports' => (int)$pdo->query('SELECT COUNT(*) FROM reports')->fetchColumn(),
+        'orders' => (int)$pdo->query('SELECT COUNT(*) FROM orders')->fetchColumn(),
     ));
 }
 
@@ -26,6 +27,10 @@ function act_login()
     $body = bg_body();
     $password = isset($body['password']) && is_string($body['password']) ? $body['password'] : '';
     $ip = isset($_SERVER['REMOTE_ADDR']) ? (string)$_SERVER['REMOTE_ADDR'] : 'unknown';
+
+    if ($APP_PASSWORD === '') {
+        bg_fail(403, '服务器未设置访问密码，仅允许本机访问；请先在 app.env 设置 APP_PASSWORD');
+    }
 
     $fails = bg_throttle_load();
     $rec = isset($fails[$ip]) && is_array($fails[$ip]) ? $fails[$ip] : array('n' => 0, 'until' => 0);
@@ -49,12 +54,7 @@ function act_login()
     }
     unset($fails[$ip]);
     bg_throttle_save($fails);
-    setcookie('bg_session', bg_token(), array(
-        'expires' => time() + 2592000,
-        'path' => '/',
-        'httponly' => true,
-        'samesite' => 'Lax',
-    ));
+    bg_session_cookie(bg_token(), time() + bg_session_ttl());
     bg_json(200, array('ok' => true));
 }
 
@@ -82,19 +82,14 @@ function act_bootstrap()
         'imageBase' => 'api.php?action=image&f=',
         'counts' => bg_bootstrap_counts($pdo),
         'firstDate' => $first,
-        'version' => '3.4',
+        'version' => '3.6',
     ));
     return;
 }
 
 function act_logout()
 {
-    setcookie('bg_session', '', array(
-        'expires' => time() - 3600,
-        'path' => '/',
-        'httponly' => true,
-        'samesite' => 'Lax',
-    ));
+    bg_session_cookie('', time() - 3600);
     bg_json(200, array('ok' => true));
     return;
 }

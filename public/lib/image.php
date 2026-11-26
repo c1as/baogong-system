@@ -11,7 +11,9 @@ function bg_image_name($v)
     if (!is_string($v) || $v === '') {
         return '';
     }
-    if (strpos($v, 'data:') === 0) {
+    // 安全：只接受相对文件名，任何带协议的写法（data: / javascript: / http: / file: 等）一律拒绝，
+    // 避免备份恢复等外部数据把图片字段变成可执行链接（存储型 XSS）。
+    if (preg_match('#^[a-z][a-z0-9+.\-]*:#i', $v)) {
         return '';
     }
     $p = strpos($v, '?');
@@ -23,14 +25,15 @@ function bg_image_name($v)
         $v = substr($v, 0, $p);
     }
     $v = ltrim(str_replace('\\', '/', $v), '/');
+    $safe = '/^[0-9A-Za-z_.\-\x{4e00}-\x{9fa5}]+\.(jpg|jpeg|png|webp|pdf)$/u';
     if (preg_match('#^(parts|attachments|drawings)/([^/]+)$#', $v, $m)) {
-        return $m[1] . '/' . $m[2];
+        return preg_match($safe, $m[2]) ? $m[1] . '/' . $m[2] : '';
     }
     $slash = strrpos($v, '/');
     if ($slash !== false) {
         $v = substr($v, $slash + 1);
     }
-    return $v;
+    return preg_match($safe, $v) ? $v : '';
 }
 
 /* 按名字在各图片目录中定位文件：parts/ → attachments/ → 旧版 images 根目录 */

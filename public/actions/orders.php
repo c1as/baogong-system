@@ -130,10 +130,30 @@ function act_order_create()
     }
     $body = bg_body();
     $in = isset($body['order']) && is_array($body['order']) ? $body['order'] : $body;
-    $db = bg_db_load();
-    $order = bg_normalize_order($in, null, $db['parts'], $db['orders']);
-    $db['orders'][] = $order;
-    bg_db_save($db);
+    $pdo = bg_pdo();
+    $date = bg_date(isset($in['date']) ? $in['date'] : '');
+    $partId = isset($in['partId']) && is_string($in['partId']) ? $in['partId'] : '';
+    $part = $partId !== '' ? bg_part_by_id($pdo, $partId) : null;
+    $in['no'] = isset($in['no']) && is_string($in['no']) ? trim($in['no']) : '';
+
+    $pdo->beginTransaction();
+    try {
+        if ($in['no'] === '') {
+            $in['no'] = bg_seq_next_no($pdo, 'orders', 'PO' . str_replace('-', '', $date) . '-');
+        }
+        $conflict = bg_order_row_by_no($pdo, $in['no']);
+        $order = bg_normalize_order($in, null, $part ? array($part) : array(), $conflict ? array($conflict) : array());
+        bg_order_insert($pdo, $order);
+        $pdo->commit();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        if (bg_unique_error($e)) {
+            bg_fail(400, '订单号「' . $in['no'] . '」已存在');
+        }
+        throw $e;
+    }
     bg_json(200, array('order' => $order));
     return;
 }
@@ -147,20 +167,43 @@ function act_order_update()
     $id = isset($_GET['id']) && is_string($_GET['id']) ? $_GET['id'] : '';
     $body = bg_body();
     $in = isset($body['order']) && is_array($body['order']) ? $body['order'] : $body;
-    $db = bg_db_load();
-    $target = -1;
-    foreach ($db['orders'] as $i => $o) {
-        if (isset($o['id']) && $o['id'] === $id) {
-            $target = $i;
-            break;
-        }
-    }
-    if ($target < 0) {
+    $pdo = bg_pdo();
+    $existing = bg_order_by_id($pdo, $id);
+    if (!$existing) {
         bg_fail(404, '订单不存在');
     }
-    $order = bg_normalize_order($in, $db['orders'][$target], $db['parts'], $db['orders']);
-    $db['orders'][$target] = $order;
-    bg_db_save($db);
+    if (isset($in['updatedAt']) && is_string($in['updatedAt']) && $in['updatedAt'] !== ''
+        && $in['updatedAt'] !== $existing['updatedAt']) {
+        bg_fail(409, '该订单已被他人修改，请刷新后重试');
+    }
+    $date = bg_date(isset($in['date']) ? $in['date'] : '');
+    $partId = isset($in['partId']) && is_string($in['partId']) ? $in['partId'] : '';
+    $part = $partId !== '' ? bg_part_by_id($pdo, $partId) : null;
+    $in['no'] = isset($in['no']) && is_string($in['no']) ? trim($in['no']) : '';
+
+    $pdo->beginTransaction();
+    try {
+        if ($in['no'] === '') {
+            $in['no'] = bg_seq_next_no($pdo, 'orders', 'PO' . str_replace('-', '', $date) . '-');
+        }
+        $conflict = bg_order_row_by_no($pdo, $in['no']);
+        $order = bg_normalize_order($in, $existing, $part ? array($part) : array(), $conflict ? array($conflict) : array());
+        if (bg_order_update($pdo, $order, $existing['updatedAt']) < 1) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            bg_fail(409, '该订单已被他人修改，请刷新后重试');
+        }
+        $pdo->commit();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        if (bg_unique_error($e)) {
+            bg_fail(400, '订单号「' . $in['no'] . '」已存在');
+        }
+        throw $e;
+    }
     bg_json(200, array('order' => $order));
     return;
 }
@@ -168,19 +211,10 @@ function act_order_update()
 function act_order_delete()
 {
     $id = isset($_GET['id']) && is_string($_GET['id']) ? $_GET['id'] : '';
-    $db = bg_db_load();
-    $target = -1;
-    foreach ($db['orders'] as $i => $o) {
-        if (isset($o['id']) && $o['id'] === $id) {
-            $target = $i;
-            break;
-        }
-    }
-    if ($target < 0) {
+    $pdo = bg_pdo();
+    if (bg_order_delete($pdo, $id) < 1) {
         bg_fail(404, '订单不存在');
     }
-    array_splice($db['orders'], $target, 1);
-    bg_db_save($db);
     bg_json(200, array('ok' => true));
     return;
 }

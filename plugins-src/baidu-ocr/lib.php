@@ -17,7 +17,10 @@ function bg_baidu_cfg($cfg)
 {
     $cfg = is_array($cfg) ? $cfg : array();
     $endpoint = isset($cfg['endpoint']) ? trim((string)$cfg['endpoint']) : '';
-    if ($endpoint === '') {
+    /* 安全：端点必须是官方域名的 HTTPS 地址，异常配置回落到默认端点，避免密钥发往任意主机 */
+    $ep = @parse_url($endpoint);
+    $epHost = is_array($ep) && !empty($ep['host']) ? strtolower($ep['host']) : '';
+    if ($endpoint === '' || strtolower((string)($ep['scheme'] ?? '')) !== 'https' || $epHost !== 'aip.baidubce.com') {
         $endpoint = 'https://aip.baidubce.com';
     }
     $type = isset($cfg['ocrType']) ? (string)$cfg['ocrType'] : '';

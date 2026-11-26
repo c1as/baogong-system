@@ -41,7 +41,11 @@ if ($endpoint === '') {
     $endpoint = MIMOOCR_DEFAULT_ENDPOINT;
 }
 $endpointOk = substr(strtolower($endpoint), 0, 8) === 'https://';
-$details[] = array('label' => '接口地址', 'ok' => $endpointOk, 'detail' => $endpointOk ? mimoocr_cut($endpoint, 120) : '必须为 https:// 开头的地址');
+$mimo_host = strtolower((string)parse_url($endpoint, PHP_URL_HOST));
+if ($endpointOk && !in_array($mimo_host, array('api.xiaomimimo.com', 'token-plan-cn.xiaomimimo.com'), true)) {
+    $endpointOk = false;
+}
+$details[] = array('label' => '接口地址', 'ok' => $endpointOk, 'detail' => $endpointOk ? mimoocr_cut($endpoint, 120) : '必须是 https://api.xiaomimimo.com 官方域名');
 if (!$endpointOk) {
     $ok = false;
 }

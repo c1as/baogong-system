@@ -27,6 +27,10 @@ $details = array();
 
 $ok_key = ($api_key !== '');
 $ok_url = (bool)preg_match('#^https://[^[:space:]]+$#i', $endpoint);
+$qwen_host = strtolower((string)parse_url($endpoint, PHP_URL_HOST));
+if ($ok_url && !in_array($qwen_host, array('dashscope.aliyuncs.com', 'dashscope-intl.aliyuncs.com'), true)) {
+    $ok_url = false;
+}
 
 $detail_key = '未填写';
 if ($ok_key) {
@@ -45,10 +49,10 @@ $details[] = array(
 );
 
 if (!$ok_url) {
-    $details[] = array('label' => '接口地址', 'ok' => false, 'detail' => '必须以 https:// 开头：' . qwenocr_cut($endpoint, 100));
+    $details[] = array('label' => '接口地址', 'ok' => false, 'detail' => '必须是 https://dashscope.aliyuncs.com 官方域名：' . qwenocr_cut($endpoint, 100));
     return array(
         'ok'      => false,
-        'message' => '接口地址格式不正确，应填 https://…/compatible-mode/v1/chat/completions',
+        'message' => '接口地址格式不正确，应填 https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
         'details' => array_slice($details, 0, 10),
     );
 }

@@ -145,12 +145,12 @@ function bg_normalize_order($in, $existing, $parts, $orders)
     );
 }
 
-function bg_auto_order_for_item($report, $item, $orders)
+function bg_auto_order_for_item($report, $item, $orders, $no = '')
 {
     $now = gmdate('Y-m-d\TH:i:s\Z');
     return array(
         'id' => bg_uuid(),
-        'no' => bg_next_order_no($orders, $report['date']),
+        'no' => $no !== '' ? $no : bg_next_order_no($orders, $report['date']),
         'date' => $report['date'],
         'partId' => $item['partId'],
         'partNo' => $item['partNo'],

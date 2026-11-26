@@ -35,7 +35,13 @@ function act_data_clear()
         bg_snapshot_create('pre-clear', '清除全部数据前自动备份');
     }
     $res = bg_data_clear();
-    bg_json(200, array('ok' => true, 'cleared' => $res['cleared'], 'images' => $res['images']));
+    bg_json(200, array(
+        'ok' => true,
+        'cleared' => $res['cleared'],
+        'images' => $res['images'],
+        'logs' => isset($res['logs']) ? $res['logs'] : 0,
+        'reviews' => isset($res['reviews']) ? $res['reviews'] : 0,
+    ));
     return;
 }
 

@@ -110,29 +110,56 @@ function act_report_create()
     }
     $body = bg_body();
     $in = isset($body['report']) && is_array($body['report']) ? $body['report'] : $body;
-    $db = bg_db_load();
-    $report = bg_normalize_report($in, null, $db);
-    foreach ($report['items'] as $ii => $item) {
-        if ($item['orderId'] === '') {
-            $order = bg_auto_order_for_item($report, $item, $db['orders']);
-            $db['orders'][] = $order;
-            $report['items'][$ii]['orderId'] = $order['id'];
-            $report['items'][$ii]['orderNo'] = $order['no'];
-        }
-    }
-    $report['orderId'] = $report['items'][0]['orderId'];
-    $report['orderNo'] = $report['items'][0]['orderNo'];
+    $pdo = bg_pdo();
+    $date = bg_date(isset($in['date']) ? $in['date'] : '');
+    list($partIds, $orderIds) = bg_report_item_refs($in);
+    $parts = bg_parts_by_ids($pdo, $partIds);
+    $orders = bg_orders_by_ids($pdo, $orderIds);
+    $in['no'] = isset($in['no']) && is_string($in['no']) ? trim($in['no']) : '';
 
-    $images = array();
-    $newImages = isset($body['newImages']) && is_array($body['newImages']) ? array_slice($body['newImages'], 0, 6) : array();
-    foreach ($newImages as $dataUrl) {
-        if (is_string($dataUrl) && strpos($dataUrl, 'data:') === 0) {
-            $images[] = bg_image_save('attachments', bg_attach_base(), $dataUrl);
+    $pdo->beginTransaction();
+    try {
+        if ($in['no'] === '') {
+            $in['no'] = bg_seq_next_no($pdo, 'reports', 'BG' . str_replace('-', '', $date) . '-');
         }
+        $conflict = bg_report_row_by_no($pdo, $in['no']);
+        $db = array(
+            'parts' => $parts,
+            'orders' => $orders,
+            'reports' => $conflict ? array($conflict) : array(),
+        );
+        $report = bg_normalize_report($in, null, $db);
+        foreach ($report['items'] as $ii => $item) {
+            if ($item['orderId'] === '') {
+                $no = bg_seq_next_no($pdo, 'orders', 'PO' . str_replace('-', '', $report['date']) . '-');
+                $order = bg_auto_order_for_item($report, $item, array(), $no);
+                bg_order_insert($pdo, $order);
+                $report['items'][$ii]['orderId'] = $order['id'];
+                $report['items'][$ii]['orderNo'] = $order['no'];
+            }
+        }
+        $report['orderId'] = $report['items'][0]['orderId'];
+        $report['orderNo'] = $report['items'][0]['orderNo'];
+
+        $images = array();
+        $newImages = isset($body['newImages']) && is_array($body['newImages']) ? array_slice($body['newImages'], 0, 6) : array();
+        foreach ($newImages as $dataUrl) {
+            if (is_string($dataUrl) && strpos($dataUrl, 'data:') === 0) {
+                $images[] = bg_image_save('attachments', bg_attach_base(), $dataUrl);
+            }
+        }
+        $report['images'] = $images;
+        bg_report_insert($pdo, $report);
+        $pdo->commit();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        if (bg_unique_error($e)) {
+            bg_fail(400, '报工单号「' . $in['no'] . '」已存在');
+        }
+        throw $e;
     }
-    $report['images'] = $images;
-    $db['reports'][] = $report;
-    bg_db_save($db);
     bg_json(200, array('report' => $report));
     return;
 }
@@ -146,54 +173,88 @@ function act_report_update()
     $id = isset($_GET['id']) && is_string($_GET['id']) ? $_GET['id'] : '';
     $body = bg_body();
     $in = isset($body['report']) && is_array($body['report']) ? $body['report'] : $body;
-    $db = bg_db_load();
-    $target = -1;
-    foreach ($db['reports'] as $i => $r) {
-        if (isset($r['id']) && $r['id'] === $id) {
-            $target = $i;
-            break;
-        }
-    }
-    if ($target < 0) {
+    $pdo = bg_pdo();
+    $existing = bg_report_by_id($pdo, $id);
+    if (!$existing) {
         bg_fail(404, '报工单不存在');
     }
-    $existing = $db['reports'][$target];
-    $report = bg_normalize_report($in, $existing, $db);
-    foreach ($report['items'] as $ii => $item) {
-        if ($item['orderId'] === '') {
-            $order = bg_auto_order_for_item($report, $item, $db['orders']);
-            $db['orders'][] = $order;
-            $report['items'][$ii]['orderId'] = $order['id'];
-            $report['items'][$ii]['orderNo'] = $order['no'];
-        }
+    if (isset($in['updatedAt']) && is_string($in['updatedAt']) && $in['updatedAt'] !== ''
+        && $in['updatedAt'] !== $existing['updatedAt']) {
+        bg_fail(409, '该报工单已被他人修改，请刷新后重试');
     }
-    $report['orderId'] = $report['items'][0]['orderId'];
-    $report['orderNo'] = $report['items'][0]['orderNo'];
+    $date = bg_date(isset($in['date']) ? $in['date'] : '');
+    list($partIds, $orderIds) = bg_report_item_refs($in);
+    $parts = bg_parts_by_ids($pdo, $partIds);
+    $orders = bg_orders_by_ids($pdo, $orderIds);
+    $in['no'] = isset($in['no']) && is_string($in['no']) ? trim($in['no']) : '';
 
-    $allowed = isset($existing['images']) && is_array($existing['images']) ? $existing['images'] : array();
-    $kept = $allowed;
-    if (isset($body['images']) && is_array($body['images'])) {
-        $kept = array();
-        foreach ($allowed as $f) {
-            if (in_array($f, $body['images'], true)) {
-                $kept[] = $f;
+    $pdo->beginTransaction();
+    try {
+        if ($in['no'] === '') {
+            $in['no'] = bg_seq_next_no($pdo, 'reports', 'BG' . str_replace('-', '', $date) . '-');
+        }
+        $conflict = bg_report_row_by_no($pdo, $in['no']);
+        $db = array(
+            'parts' => $parts,
+            'orders' => $orders,
+            'reports' => $conflict ? array($conflict) : array(),
+        );
+        $report = bg_normalize_report($in, $existing, $db);
+        foreach ($report['items'] as $ii => $item) {
+            if ($item['orderId'] === '') {
+                $no = bg_seq_next_no($pdo, 'orders', 'PO' . str_replace('-', '', $report['date']) . '-');
+                $order = bg_auto_order_for_item($report, $item, array(), $no);
+                bg_order_insert($pdo, $order);
+                $report['items'][$ii]['orderId'] = $order['id'];
+                $report['items'][$ii]['orderNo'] = $order['no'];
             }
         }
-    }
-    foreach ($allowed as $f) {
-        if (!in_array($f, $kept, true)) {
+        $report['orderId'] = $report['items'][0]['orderId'];
+        $report['orderNo'] = $report['items'][0]['orderNo'];
+
+        $allowed = isset($existing['images']) && is_array($existing['images']) ? $existing['images'] : array();
+        $kept = $allowed;
+        if (isset($body['images']) && is_array($body['images'])) {
+            $kept = array();
+            foreach ($allowed as $f) {
+                if (in_array($f, $body['images'], true)) {
+                    $kept[] = $f;
+                }
+            }
+        }
+        /* 待删附件等写库成功后再删，避免并发冲突回滚时误删文件 */
+        $toRemove = array();
+        foreach ($allowed as $f) {
+            if (!in_array($f, $kept, true)) {
+                $toRemove[] = $f;
+            }
+        }
+        $newImages = isset($body['newImages']) && is_array($body['newImages']) ? array_slice($body['newImages'], 0, 6) : array();
+        foreach ($newImages as $dataUrl) {
+            if (is_string($dataUrl) && strpos($dataUrl, 'data:') === 0) {
+                $kept[] = bg_image_save('attachments', bg_attach_base(), $dataUrl);
+            }
+        }
+        $report['images'] = $kept;
+        if (bg_report_update($pdo, $report, $existing['updatedAt']) < 1) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            bg_fail(409, '该报工单已被他人修改，请刷新后重试');
+        }
+        foreach ($toRemove as $f) {
             bg_image_remove($f);
         }
-    }
-    $newImages = isset($body['newImages']) && is_array($body['newImages']) ? array_slice($body['newImages'], 0, 6) : array();
-    foreach ($newImages as $dataUrl) {
-        if (is_string($dataUrl) && strpos($dataUrl, 'data:') === 0) {
-            $kept[] = bg_image_save('attachments', bg_attach_base(), $dataUrl);
+        $pdo->commit();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
         }
+        if (bg_unique_error($e)) {
+            bg_fail(400, '报工单号「' . $in['no'] . '」已存在');
+        }
+        throw $e;
     }
-    $report['images'] = $kept;
-    $db['reports'][$target] = $report;
-    bg_db_save($db);
     bg_json(200, array('report' => $report));
     return;
 }
@@ -201,23 +262,16 @@ function act_report_update()
 function act_report_delete()
 {
     $id = isset($_GET['id']) && is_string($_GET['id']) ? $_GET['id'] : '';
-    $db = bg_db_load();
-    $target = -1;
-    foreach ($db['reports'] as $i => $r) {
-        if (isset($r['id']) && $r['id'] === $id) {
-            $target = $i;
-            break;
-        }
-    }
-    if ($target < 0) {
+    $pdo = bg_pdo();
+    $existing = bg_report_by_id($pdo, $id);
+    if (!$existing) {
         bg_fail(404, '报工单不存在');
     }
-    $imgs = isset($db['reports'][$target]['images']) && is_array($db['reports'][$target]['images']) ? $db['reports'][$target]['images'] : array();
+    $imgs = isset($existing['images']) && is_array($existing['images']) ? $existing['images'] : array();
     foreach ($imgs as $f) {
         bg_image_remove($f);
     }
-    array_splice($db['reports'], $target, 1);
-    bg_db_save($db);
+    bg_report_delete($pdo, $id);
     bg_json(200, array('ok' => true));
     return;
 }

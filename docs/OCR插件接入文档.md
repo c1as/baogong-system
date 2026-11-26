@@ -2,7 +2,7 @@
 
 > 适用版本：v2.6（2026-11-22）
 > 相关代码：`public/api.php`（插件调度）、`public/lib/net.php`（自检与出网）、`public/plugins/`（插件目录）
-> 参考实现：`plugins/mock-ocr/`（最小示例）、`plugins/baidu-ocr/`（百度通用 OCR，含超时重试）、`plugins/qwen35-ocr/`（千问多模态，含文本兜底解析）、`plugins/mimo-v26-flash/`（小米 MiMo 视觉模型，含零件库注入与重试）、`plugins/ocr-ensemble/`（多路融合）、`plugins/ocr-log/`（识别日志）
+> 参考实现：`plugins-src/mock-ocr/`（最小示例）、`plugins-src/baidu-ocr/`（百度通用 OCR，含超时重试）、`plugins-src/qwen35-ocr/`（千问多模态，含文本兜底解析）、`plugins-src/mimo-v26-flash/`（小米 MiMo 视觉模型，含零件库注入与重试）、`plugins-src/tencent-vision/`（腾讯云 OCR + 混元 Hy4 双引擎）、`plugins/ocr-ensemble/`（多路融合）、`plugins/ocr-log/`（识别日志）。非内置插件源码统一放仓库根 `plugins-src/<id>/`，以插件包形式从市场分发，不进主程序热更包。
 
 ---
 

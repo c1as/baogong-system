@@ -1,0 +1,19 @@
+[
+  { "DetectedText": "日期：2026-11-20", "ItemPolygon": { "X": 10, "Y": 0, "Width": 200, "Height": 20 } },
+  { "DetectedText": "报工人：张三", "ItemPolygon": { "X": 10, "Y": 25, "Width": 150, "Height": 20 } },
+  { "DetectedText": "车间：一车间", "ItemPolygon": { "X": 170, "Y": 25, "Width": 150, "Height": 20 } },
+  { "DetectedText": "TD24510R04", "ItemPolygon": { "X": 10, "Y": 60, "Width": 100, "Height": 20 } },
+  { "DetectedText": "固定块", "ItemPolygon": { "X": 120, "Y": 60, "Width": 80, "Height": 20 } },
+  { "DetectedText": "铣", "ItemPolygon": { "X": 220, "Y": 60, "Width": 40, "Height": 20 } },
+  { "DetectedText": "80", "ItemPolygon": { "X": 300, "Y": 60, "Width": 40, "Height": 20 } },
+  { "DetectedText": "AB123456", "ItemPolygon": { "X": 10, "Y": 100, "Width": 100, "Height": 20 } },
+  { "DetectedText": "支架", "ItemPolygon": { "X": 120, "Y": 100, "Width": 80, "Height": 20 } },
+  { "DetectedText": "钻", "ItemPolygon": { "X": 220, "Y": 100, "Width": 40, "Height": 20 } },
+  { "DetectedText": "50", "ItemPolygon": { "X": 300, "Y": 100, "Width": 40, "Height": 20 } },
+  { "DetectedText": "ZZ998877", "ItemPolygon": { "X": 10, "Y": 140, "Width": 100, "Height": 20 } },
+  { "DetectedText": "连接板", "ItemPolygon": { "X": 120, "Y": 140, "Width": 80, "Height": 20 } },
+  { "DetectedText": "磨", "ItemPolygon": { "X": 220, "Y": 140, "Width": 40, "Height": 20 } },
+  { "DetectedText": "50", "ItemPolygon": { "X": 300, "Y": 140, "Width": 40, "Height": 20 } },
+  { "DetectedText": "合计", "ItemPolygon": { "X": 10, "Y": 180, "Width": 60, "Height": 20 } },
+  { "DetectedText": "180", "ItemPolygon": { "X": 300, "Y": 180, "Width": 40, "Height": 20 } }
+]

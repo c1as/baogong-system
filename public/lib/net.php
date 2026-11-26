@@ -24,13 +24,57 @@ function bg_ca_file()
 }
 
 /**
- * 服务器端 HTTP 请求
- * 返回：ok(是否拿到响应) / status / ms / body / error
+ * 是否为公网 IP（拒绝私网/回环/链路本地/保留地址）
  */
-function bg_http($method, $url, $headers, $body, $timeout = 10, $insecure = false)
+function bg_ip_public($ip)
+{
+    return filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false;
+}
+
+/**
+ * 是否可安全外访的 HTTPS 地址：https + 无 userinfo + 主机解析后全部为公网 IP。
+ * 用于插件市场等"由配置决定目标"的请求，防止被打成内网探测跳板。
+ */
+function bg_url_https_public($url)
+{
+    $p = @parse_url((string)$url);
+    if (!is_array($p) || empty($p['scheme']) || empty($p['host'])) {
+        return false;
+    }
+    if (strtolower($p['scheme']) !== 'https') {
+        return false;
+    }
+    if (isset($p['user']) || isset($p['pass'])) {
+        return false;
+    }
+    $host = strtolower($p['host']);
+    if ($host === 'localhost' || substr($host, -6) === '.local') {
+        return false;
+    }
+    if (filter_var($host, FILTER_VALIDATE_IP)) {
+        return bg_ip_public($host);
+    }
+    $ips = @gethostbynamel($host);
+    if (!is_array($ips) || !count($ips)) {
+        return false;
+    }
+    foreach ($ips as $ip) {
+        if (!bg_ip_public($ip)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * 服务器端 HTTP 请求
+ * 返回：ok(是否拿到响应) / status / ms / body / error / redirect
+ * $follow=false 时不自动跟随跳转，由调用方校验每一跳后再继续。
+ */
+function bg_http($method, $url, $headers, $body, $timeout = 10, $insecure = false, $follow = true)
 {
     $start = microtime(true);
-    $res = array('ok' => false, 'status' => 0, 'ms' => 0, 'body' => '', 'error' => '');
+    $res = array('ok' => false, 'status' => 0, 'ms' => 0, 'body' => '', 'error' => '', 'redirect' => '');
     $method = strtoupper($method) === 'POST' ? 'POST' : 'GET';
     $headers = is_array($headers) ? $headers : array();
 
@@ -40,7 +84,7 @@ function bg_http($method, $url, $headers, $body, $timeout = 10, $insecure = fals
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_CONNECTTIMEOUT => min(5, $timeout),
             CURLOPT_TIMEOUT => $timeout,
-            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_FOLLOWLOCATION => $follow ? true : false,
             CURLOPT_MAXREDIRS => 3,
             CURLOPT_SSL_VERIFYPEER => !$insecure,
             CURLOPT_SSL_VERIFYHOST => $insecure ? 0 : 2,
@@ -57,6 +101,7 @@ function bg_http($method, $url, $headers, $body, $timeout = 10, $insecure = fals
         }
         $out = curl_exec($ch);
         $res['status'] = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+        $res['redirect'] = (string)curl_getinfo($ch, CURLINFO_REDIRECT_URL);
         if ($out === false) {
             $res['error'] = curl_error($ch) !== '' ? curl_error($ch) : '请求失败';
         } else {

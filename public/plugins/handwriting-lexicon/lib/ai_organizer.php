@@ -171,6 +171,9 @@ function bglx_rev_ai_available($cfg = array())
     if ($c['key'] === '') {
         return array('ok' => false, 'detail' => '未配置 AI Key（服务端读取，不回显）');
     }
+    if (!bglx_rev_ai_endpoint_ok($c['endpoint'])) {
+        return array('ok' => false, 'detail' => 'AI 接口地址必须是公网 HTTPS 域名，请检查设置');
+    }
     $cfg = is_array($cfg) ? $cfg : array();
     if (empty($cfg['probe'])) {
         return array('ok' => true, 'detail' => 'AI 配置完整（未执行连通性探测）');
@@ -187,6 +190,32 @@ function bglx_rev_ai_available($cfg = array())
         return array('ok' => false, 'detail' => 'AI 接口不可达：' . bglx_cut($resp['error'], 120));
     }
     return array('ok' => true, 'detail' => 'AI 接口连通（HTTP ' . $resp['status'] . '）');
+}
+
+/**
+ * AI 端点安全校验：必须是公网 HTTPS 域名（禁止 http、IP 直连、回环/内网域名）。
+ * 主程序加载时可复用 bg_url_https_public() 做 DNS 解析校验；独立运行仅做格式校验。
+ */
+function bglx_rev_ai_endpoint_ok($endpoint)
+{
+    $p = @parse_url((string)$endpoint);
+    if (!is_array($p) || empty($p['scheme']) || empty($p['host'])) {
+        return false;
+    }
+    if (strtolower($p['scheme']) !== 'https') {
+        return false;
+    }
+    if (isset($p['user']) || isset($p['pass'])) {
+        return false;
+    }
+    $host = strtolower($p['host']);
+    if ($host === 'localhost' || substr($host, -6) === '.local' || filter_var($host, FILTER_VALIDATE_IP)) {
+        return false;
+    }
+    if (function_exists('bg_url_https_public')) {
+        return bg_url_https_public($endpoint);
+    }
+    return true;
 }
 
 /**
@@ -216,6 +245,9 @@ function bglx_rev_ai_organize($corrections, $cfg = array())
     }
     if ($c['key'] === '') {
         return $fail('未配置 AI Key（请在服务端配置）');
+    }
+    if (!bglx_rev_ai_endpoint_ok($c['endpoint'])) {
+        return $fail('AI 接口地址必须是公网 HTTPS 域名');
     }
     $corrections = bglx_rev_ai_wrong_rows($corrections); // 断言：判对行不进 prompt
     if (!$corrections) {

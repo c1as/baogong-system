@@ -261,6 +261,7 @@ async function viewPartForm(id) {
     if (!no) return toast('请填写零件图号', 'err');
 
     const payload = {
+      updatedAt: part ? part.updatedAt || '' : '',
       no,
       name: $('#fName').value.trim(),
       material: $('#fMaterial').value.trim(),

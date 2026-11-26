@@ -65,7 +65,7 @@ php -S 127.0.0.1:8080 -t public
 │       ├── handwriting-lexicon/ 手写字词库：图号别名、工序/单位同义、形近字映射与人工审查
 │       ├── ocr-log/   识别日志：记录每次识别的引擎、耗时、明细与零件匹配结果
 │       └── ocr-ensemble/ 多引擎融合：交叉调用其它识别插件并投票加权
-├── plugins-src/       插件源码目录（baidu-ocr / qwen35-ocr / mimo-v26-flash / mock-ocr，不进 web 热更包，只走插件包发布）
+├── plugins-src/       插件源码目录（baidu-ocr / qwen35-ocr / mimo-v26-flash / tencent-vision / mock-ocr，不进 web 热更包，只走插件包发布）
 ├── data/              数据目录（运行时生成，不入库；需给 Web 用户写权限）
 │   ├── db/
 │   │   └── baogong.sqlite   主数据库
@@ -93,7 +93,7 @@ php -S 127.0.0.1:8080 -t public
 - `ocr-log`：识别日志插件，默认启用；记录每次识别的引擎、耗时、字段、明细、告警与零件匹配候选，按天写入 `data/ocr-logs/`，设置页可配置记录级别、保留天数与是否记录匹配结果。
 - `ocr-ensemble`：多引擎融合插件，不直接访问外网；按设置交叉调用多个已启用识别插件，逐字段投票、置信度加权并计算一致性系数，输出综合置信度与分歧告警。设置页可勾选参与引擎、调整一致判定阈值与最低置信度。
 
-其余识别插件（`baidu-ocr`、`qwen35-ocr`、`mimo-v26-flash`、`mock-ocr` 等）不再内置，统一以插件包形式在「设置 → 识别插件 → 插件市场」安装，安装后落在 `data/market-plugins/<id>/`，同名时市场副本优先。
+其余识别插件（`baidu-ocr`、`qwen35-ocr`、`mimo-v26-flash`、`tencent-vision`、`mock-ocr`）不再内置，统一以插件包形式在「设置 → 识别插件 → 插件市场」安装，安装后落在 `data/market-plugins/<id>/`，同名时市场副本优先。
 
 拍照识别条右侧可在已启用引擎之间切换，默认优先使用融合引擎；设置页顶部的「识别引擎」卡片可设置默认引擎。
 
@@ -223,7 +223,8 @@ return array(
 
 | 版本 | 日期 | 内容 | 历史归档 |
 | --- | --- | --- | --- |
-| v3.4 | 2026-11-24 | 内置插件 `handwriting-lexicon` 更新为交接新版（插件 1.1.0）：审查工作台改为逐条判定（判对/判错/撤销、version 乐观锁），新增 `lib/review_judge.php`；新增 90 天到期归档（`reviewRetentionDays` / `reviewArchiveEnabled` / `reviewArchiveDir`，按月归档到 `data/review-archive/`，审计随迁不硬删、目录穿越校验）；整图批量判定改为可选开关；主程序无需改动 | 当前版本 |
+| v3.6 | 2026-11-26 | 安全加固 + 数据层事务化：会话令牌签名与过期（`bg_session_ttl` / `bg_token_claims` / `bg_verify_token`），未设 `APP_PASSWORD` 仅允许本机登录，`bootstrap` 计数改 SQL；新增公网 HTTPS 地址校验与统一 HTTP 客户端；新增 `lib/repo.php`（零件/订单/报工事务化 CRUD、序号生成、明细替换）与 `lib/query.php`（列表与统计 SQL 下推），接口与返回结构不变；插件 `baidu-ocr` 1.3.2、`qwen35-ocr` 1.0.2、`mimo-v26-flash` 1.0.2 增加官方域名白名单，`tencent-vision` 1.0.0 上架插件市场 | 当前版本 |
+| v3.4 | 2026-11-24 | 内置插件 `handwriting-lexicon` 更新为交接新版（插件 1.1.0）：审查工作台改为逐条判定（判对/判错/撤销、version 乐观锁），新增 `lib/review_judge.php`；新增 90 天到期归档（`reviewRetentionDays` / `reviewArchiveEnabled` / `reviewArchiveDir`，按月归档到 `data/review-archive/`，审计随迁不硬删、目录穿越校验）；整图批量判定改为可选开关；主程序无需改动 | `报工系统-历史版本/baogong-v3.4-20261124.zip` |
 | v3.3 | 2026-11-24 | 修复插件市场安装/升级必然失败：解压临时目录名与插件 id 不一致导致清单二次校验不通过，改为解压到 `.tmp-*/<id>/` 后原子改名；安装响应补 `source=market`；自动清理超 1 小时的遗留临时目录 | `报工系统-历史版本/baogong-v3.3-20261124.zip` |
 | v3.2 | 2026-11-24 | 插件设置页压缩：所有插件卡片（含后续新增）支持折叠，默认收起只留标题/简介/按钮，点标题展开、开关不受影响；顶部「互联网连接测试」与「识别引擎」两卡并排且等高，左卡预留测试输出区避免结果出现时跳动；`bg_plugin_public()` 新增 `source` 字段，仅市场插件显示「卸载插件」，系统必备插件仍不可卸载 | `报工系统-历史版本/baogong-v3.2-20261124.zip` |
 | v3.1 | 2026-11-24 | 样式修复：合并时误用分支旧版 `style.css`，导致设置菜单样式（`settings-wrap/settings-menu/settings-ver`）、内置 PDF 查看器与手机端顶栏布局丢失；已恢复主分支样式并只追加插件市场样式块 | `报工系统-历史版本/baogong-v3.1-20261124.zip` |

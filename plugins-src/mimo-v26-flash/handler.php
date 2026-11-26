@@ -38,6 +38,11 @@ if ($endpoint === '') {
 if (substr(strtolower($endpoint), 0, 8) !== 'https://') {
     throw new RuntimeException('接口地址必须为 https:// 开头');
 }
+/* 安全：只允许官方域名，避免把 API Key 发往任意地址 */
+$mimo_host = strtolower((string)parse_url($endpoint, PHP_URL_HOST));
+if (!in_array($mimo_host, array('api.xiaomimimo.com', 'token-plan-cn.xiaomimimo.com'), true)) {
+    throw new RuntimeException('接口地址不在官方域名白名单（api.xiaomimimo.com）内');
+}
 
 $model = mimoocr_cfg($cfg, 'model');
 if ($model === '') {

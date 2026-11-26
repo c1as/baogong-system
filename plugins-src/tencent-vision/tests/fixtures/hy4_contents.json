@@ -1,0 +1,6 @@
+{
+  "pure_json": "{\"date\":\"2026-11-20\",\"worker\":\"张三\",\"workshop\":\"一车间\",\"note\":\"急件\",\"confidence\":0.91,\"items\":[{\"partNo\":\"TD24510R04\",\"partName\":\"固定块\",\"process\":\"铣\",\"qty\":80,\"price\":null},{\"partNo\":\"AB123456\",\"partName\":\"支架\",\"process\":\"钻\",\"qty\":50,\"price\":12.5}]}",
+  "fenced": "```json\n{\"date\":\"2026-11-20\",\"worker\":\"李四\",\"workshop\":\"二车间\",\"note\":\"\",\"confidence\":0.88,\"items\":[{\"partNo\":\"TD24510R04\",\"partName\":\"固定块\",\"process\":\"铣\",\"qty\":80,\"price\":null}]}\n```",
+  "with_text": "好的，已按报工单识别如下：\n{\"date\":\"2026-11-20\",\"worker\":\"王五\",\"workshop\":\"一车间\",\"note\":\"\",\"confidence\":0.86,\"items\":[{\"partNo\":\"AB123456\",\"partName\":\"支架\",\"process\":\"钻\",\"qty\":50,\"price\":null}]}\n请核对。",
+  "plain_text": "报工单\n日期：2026-11-20\n报工人：张三\n车间：一车间\nTD24510R04 固定块 铣 80\nAB123456 支架 钻 50"
+}
