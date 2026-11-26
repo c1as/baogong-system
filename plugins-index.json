@@ -1,6 +1,6 @@
 {
   "schema": "baogong-plugin-index/1",
-  "generatedAt": "2026-11-26T11:34:40Z",
+  "generatedAt": "2026-11-26T11:35:13Z",
   "source": {
     "repo": "c1as/baogong-system",
     "branch": "plugin",
@@ -559,6 +559,242 @@
         "url": "https://api.github.com/repos/c1as/baogong-system/releases/assets/795600329",
         "sha256": "6863c8b3251f9def2c8dc507f090cb54bd449dd93fd15cb043003e6de9e39a93",
         "size": 22011
+      }
+    },
+    {
+      "name": "腾讯云多引擎视觉识别（OCR + 混元 Hy4）",
+      "version": "1.0.0",
+      "description": "在一个插件内提供腾讯云 OCR 与混元 Hy4 双引擎识别：可多选、并行调用、独立容错，统一归一为报工标准字段，经字库连接层纠错后按 fuse / parallel / primary 三种模式收口，可被 ocr-ensemble 作为单个 report.ocr 候选调度。",
+      "author": "报工系统",
+      "capabilities": [
+        "report.ocr"
+      ],
+      "entry": "handler.php",
+      "check": "check.php",
+      "settings": [
+        {
+          "key": "engines",
+          "label": "识别引擎（可多选）",
+          "type": "multiselect",
+          "default": "tencentOcr,hy4Vision",
+          "options": [
+            {
+              "value": "tencentOcr",
+              "label": "腾讯云 OCR（字符级精准、带坐标）"
+            },
+            {
+              "value": "hy4Vision",
+              "label": "混元 Hy4（语义级结构化）"
+            }
+          ],
+          "hint": "【通用】至少勾选 1 项；勾选 2 项时并行调用，单路失败由另一路兜底"
+        },
+        {
+          "key": "outputMode",
+          "label": "输出模式",
+          "type": "select",
+          "default": "fuse",
+          "options": [
+            {
+              "value": "fuse",
+              "label": "fuse：内部轻量字段级择优，单结果（默认）"
+            },
+            {
+              "value": "parallel",
+              "label": "parallel：主结果 + alternates[] 各路留存"
+            },
+            {
+              "value": "primary",
+              "label": "primary：仅主引擎结果"
+            }
+          ],
+          "hint": "【通用】已启用 ocr-ensemble 时可切 parallel 保留各路供融合层裁决"
+        },
+        {
+          "key": "primaryEngine",
+          "label": "主引擎",
+          "type": "select",
+          "default": "tencentOcr",
+          "options": [
+            {
+              "value": "tencentOcr",
+              "label": "腾讯云 OCR"
+            },
+            {
+              "value": "hy4Vision",
+              "label": "混元 Hy4"
+            }
+          ],
+          "hint": "【通用】平局裁决时优先取主引擎值，同时决定返回 engine 字段前缀"
+        },
+        {
+          "key": "timeout",
+          "label": "单引擎超时(秒)",
+          "type": "number",
+          "default": "30",
+          "placeholder": "30",
+          "hint": "【通用】每路独立超时，网络慢可调至 45~60"
+        },
+        {
+          "key": "retries",
+          "label": "网络重试次数",
+          "type": "number",
+          "default": "1",
+          "placeholder": "1",
+          "hint": "【通用】仅网络类故障与 429/5xx 重试；HTTP 4xx 业务错误不重试以免重复计费"
+        },
+        {
+          "key": "secretId",
+          "label": "腾讯云 SecretId",
+          "type": "password",
+          "placeholder": "仅 OCR 引擎使用",
+          "hint": "【腾讯云 OCR】腾讯云访问管理控制台 API 密钥；仅存服务器 data/plugins.json，不回显"
+        },
+        {
+          "key": "secretKey",
+          "label": "腾讯云 SecretKey",
+          "type": "password",
+          "placeholder": "仅 OCR 引擎使用",
+          "hint": "【腾讯云 OCR】与 SecretId 成对；仅存服务器，不回显"
+        },
+        {
+          "key": "ocrEndpoint",
+          "label": "OCR 接口域名",
+          "type": "text",
+          "default": "ocr.tencentcloudapi.com",
+          "placeholder": "ocr.tencentcloudapi.com",
+          "hint": "【腾讯云 OCR】一般无需改；代理环境可填自建转发域名（须解析到公网，禁止内网/本机地址），签名自动去掉协议头"
+        },
+        {
+          "key": "region",
+          "label": "OCR 地域",
+          "type": "text",
+          "default": "ap-guangzhou",
+          "placeholder": "ap-guangzhou",
+          "hint": "【腾讯云 OCR】可选 ap-shanghai / ap-beijing 等，需与密钥开通地域一致"
+        },
+        {
+          "key": "ocrType",
+          "label": "OCR 子接口",
+          "type": "select",
+          "default": "accurate",
+          "options": [
+            {
+              "value": "accurate",
+              "label": "accurate：高精度版（推荐手写单，带坐标）"
+            },
+            {
+              "value": "handwriting",
+              "label": "handwriting：手写体专用"
+            },
+            {
+              "value": "basic",
+              "label": "basic：标准版（更快）"
+            }
+          ],
+          "hint": "【腾讯云 OCR】分别对应 GeneralAccurateOCR / GeneralHandwritingOCR / GeneralBasicOCR"
+        },
+        {
+          "key": "configId",
+          "label": "多语配置 ConfigID",
+          "type": "text",
+          "default": "",
+          "placeholder": "留空；多语可填 MulOCR",
+          "hint": "【腾讯云 OCR】高精度版按官方文档使用 ConfigID，填 MulOCR 可开 100+ 语种；一般留空"
+        },
+        {
+          "key": "dateFallback",
+          "label": "日期缺失按当天补全",
+          "type": "checkbox",
+          "default": "1",
+          "hint": "【腾讯云 OCR】未识别到日期时按 ctx.today 补全并写告警"
+        },
+        {
+          "key": "hy4ApiKey",
+          "label": "混元 API Key",
+          "type": "password",
+          "placeholder": "混元控制台 API Key",
+          "hint": "【混元 Hy4】Bearer Key，独立于 SecretId/SecretKey；仅存服务器，不回显"
+        },
+        {
+          "key": "hy4Endpoint",
+          "label": "混元接口地址",
+          "type": "text",
+          "default": "https://api.hunyuan.cloud.tencent.com/v1/chat/completions",
+          "placeholder": "https://api.hunyuan.cloud.tencent.com/v1/chat/completions",
+          "hint": "【混元 Hy4】OpenAI 兼容 chat/completions，一般无需改；必须以 https:// 开头且解析到公网（禁止内网/本机地址）"
+        },
+        {
+          "key": "hy4Model",
+          "label": "Hy4 模型名",
+          "type": "text",
+          "default": "hunyuan-vision",
+          "placeholder": "hunyuan-vision",
+          "hint": "【混元 Hy4】默认 hunyuan-vision；Hy4/TokenHub 实际模型 id 请按控制台填写"
+        },
+        {
+          "key": "maxTokens",
+          "label": "Hy4 最大输出 Token",
+          "type": "number",
+          "default": "4096",
+          "placeholder": "4096",
+          "hint": "【混元 Hy4】明细行数多时可上调；输出达到上限会写告警"
+        },
+        {
+          "key": "catalogLimit",
+          "label": "零件库注入条数",
+          "type": "number",
+          "default": "200",
+          "placeholder": "200",
+          "hint": "【混元 Hy4】0~300；注入提示词供比对的零件库条数上限"
+        },
+        {
+          "key": "hy4Prompt",
+          "label": "Hy4 识别指令",
+          "type": "textarea",
+          "rows": 16,
+          "default": "你是工厂车间的「报工单」识别引擎。请识别图片中的手写/印刷报工单，只输出一个 JSON 对象，不要解释、不要 markdown 代码块。\n\n输出结构：\n{\"date\":\"YYYY-MM-DD\",\"worker\":\"报工人\",\"workshop\":\"车间\",\"note\":\"备注\",\"confidence\":0.9,\"items\":[{\"partNo\":\"图号\",\"partName\":\"零件名称\",\"process\":\"工序\",\"qty\":12,\"price\":null}]}\n\n识别规则：\n1. date：取报工日期/填单日期，补全为 YYYY-MM-DD；只写月日时按当前年份补全；识别不到填空字符串。\n2. worker / workshop / note：分别取报工人、车间、备注，没有则填空字符串。\n3. items：每行一条报工明细，最多 20 行；表头行、合计行、小计行、签名行不算明细。\n4. partNo / partName / process 优先采用「零件库」中完全一致的写法；库里没有的照单据原文填写，不得改写、缩写或编造。\n5. process 只填工序名（车/铣/钻/磨/钳/热处理/电镀/装配等），无法判断填空字符串。\n6. qty：本行数量，纯数字不带单位；看不清填 null，不要猜。\n7. price：单价，纯数字；单据没有填 null。\n8. confidence：0~1 之间，表示整单识别把握程度。\n9. 模糊、遮挡、无法辨认的单字用英文问号 ? 代替；宁可留空也不要编造内容。\n\n当前日期：{TODAY}\n零件库（图号 | 名称 | 工序）：\n{CATALOG}",
+          "hint": "【混元 Hy4】保留 {TODAY} / {CATALOG} 占位符与 JSON 字段名；自检会扫描关键字段名"
+        },
+        {
+          "key": "skipTls",
+          "label": "跳过证书校验",
+          "type": "checkbox",
+          "default": "",
+          "hint": "【混元 Hy4 / OCR】仅自签代理调试用，生产环境请勿勾选"
+        },
+        {
+          "key": "agreeThreshold",
+          "label": "字段一致阈值",
+          "type": "number",
+          "default": "0.85",
+          "placeholder": "0.85",
+          "hint": "【融合与阈值】fuse 模式判定两路字段一致的阈值；印刷体 0.9，含手写可降到 0.8"
+        },
+        {
+          "key": "reviewThreshold",
+          "label": "人工复核阈值",
+          "type": "number",
+          "default": "0.6",
+          "placeholder": "0.6",
+          "hint": "【融合与阈值】自报置信度低于此值时写入「建议人工复核」告警"
+        },
+        {
+          "key": "compareMode",
+          "label": "单引擎对比模式",
+          "type": "checkbox",
+          "default": "",
+          "hint": "【融合与阈值】开启后把两路字段差异写入 warnings（P1，默认关闭）"
+        }
+      ],
+      "id": "tencent-vision",
+      "tag": "plugin-tencent-vision-v1.0.0",
+      "releasedAt": "2026-11-26T11:35:13Z",
+      "package": {
+        "name": "plugin-tencent-vision-v1.0.0.zip",
+        "url": "https://api.github.com/repos/c1as/baogong-system/releases/assets/795602128",
+        "sha256": "d0d7ae59437509acbf07bd18059729febc4933b383bc598f490de935d74181a4",
+        "size": 85999
       }
     }
   ]
